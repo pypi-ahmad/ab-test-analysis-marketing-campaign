@@ -6,16 +6,16 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | | |
 |---|---|
-| **Final recommendation (executed run)** | **HOLD** the old campaign creative |
+| **Current recommendation (v2 production run)** | **HOLD** the old campaign creative |
 | **Primary p-value (two-sided)** | **0.189883** (fail to reject \(H_0\) at α = 0.05) |
 | **Observed lift (new − old)** | **−0.1578 percentage points** |
-| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** |
+| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** *(new in v2)* |
 | **Country-adjusted odds ratio** | **0.9852** |
-| **SRM** | p = **0.947**, imbalance **0.0062 pp** (not severe) |
-| **Bayesian P(new > old)** | **9.39%** (uniform Beta–Binomial) |
+| **SRM** | p = **0.946754**, imbalance **0.0062 pp** (not severe) *(new in v2)* |
+| **Bayesian P(new > old)** | **9.39%** (uniform Beta–Binomial) *(new in v2)* |
 | **Power for a +1 pp absolute MDE** | **~100%** at actual sample size |
 
-> **Production honesty:** “Production-grade” means production **methodology** (Microsoft/DoorDash/Eppo-style gates, Wilson CIs, bootstrap, FDR segments, Bayesian cross-check). It does **not** mean forcing a creative “win.” The data support **HOLD**.
+> **What “better results” means here:** We improved **decision quality and trustworthiness**, not conversion. The creative still does not win. Production upgrades add SRM, Wilson CIs, bootstrap, χ² cross-check, BH-FDR segments, a power curve, Bayesian confirmation, and an explicit scorecard — so **HOLD** is multi-method, not a single p-value. Full **v1 vs v2** tables: [Baseline vs production upgrade](#baseline-v1-vs-production-v2--outputs--techniques).
 
 ---
 
@@ -23,9 +23,135 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | Audience | What to read first |
 |---|---|
-| **Portfolio / technical evaluators** | [Architecture & design decisions](#1-for-portfolio-evaluators), [Evidence from the real run](#evidence-from-the-real-run), [Limitations](#honest-limitations) |
+| **Portfolio / technical evaluators** | [v1 vs v2 comparison](#baseline-v1-vs-production-v2--outputs--techniques), [Architecture](#1-for-portfolio-evaluators), [Evidence](#evidence-from-the-real-run), [Limitations](#honest-limitations) |
 | **Hands-on operators** | [Quick start](#2-for-hands-on-users), [Re-run & troubleshooting](#re-run-the-full-pipeline), [Extending the analysis](#extending-the-local-workflow) |
 | **Tutorial learners** | [Concepts before code](#3-for-tutorial-learners), [End-to-end flow](#implementation-flow-end-to-end), [How to read each metric](#how-to-read-the-metrics) |
+
+---
+
+## Baseline (v1) vs production (v2) — outputs & techniques
+
+This section **keeps the original baseline numbers** and compares them to the current production-grade notebook run. Same dataset, same cleaning rules, same α = 0.05 — upgraded **methods and decision gates**.
+
+### How “better” is defined (and what it is not)
+
+| Dimension | Baseline v1 | Production v2 | Better? |
+|---|---|---|---|
+| Creative conversion “win” | New page slightly worse / null | Same data → still null / slightly worse | **Not a conversion win** (honest) |
+| Trust that randomization worked | Assumed after cleaning | **Measured via SRM** | Yes — experiment integrity |
+| Uncertainty on the lift | Analytic CI only | Analytic CI **+ bootstrap** | Yes — robustness |
+| Arm rate intervals | Normal approx | **Wilson score** | Yes — better proportion CI practice |
+| Effect confirmation | z-test + logit | z-test + **χ²** + logit + **Bayes** | Yes — multi-method |
+| Segment safety | Country rates only | Country z-tests + **BH-FDR** | Yes — controls false discoveries |
+| “Should we extend?” | n for MDE + power number | Same **+ power curve plot** | Yes — design transparency |
+| Decision packaging | Manager paragraph | **Scorecard gates** + manager summary | Yes — production decision UX |
+| Notebook artifacts | 3 plots | **6 plots** | Yes — richer evidence surface |
+
+**Bottom line on improvement:** v2 does **not** claim a higher conversion rate or a lower p-value “hack.” It claims a **higher-confidence HOLD**: randomization looks healthy (SRM), the null is stable under bootstrap and Bayesian views, segments do not rescue the new page after FDR, and the test is already powered for a business-relevant +1 pp MDE.
+
+### Techniques added in v2 (what we used and why)
+
+| New technique | Role | Source of practice |
+|---|---|---|
+| **Sample Ratio Mismatch (SRM)** χ² GOF vs 50/50 | Trustworthiness gate before trusting effects | Microsoft ExP, DoorDash, Eppo, Statsig |
+| **Wilson score CIs** for arm rates | Production-preferred proportion intervals | statsmodels `proportion_confint(method="wilson")` |
+| **`proportions_chisquare` cross-check** | Confirms two-proportion z-test | statsmodels |
+| **Bootstrap percentile CI** (2,000 resamples, seed 42) | Nonparametric robustness on \(p_{\text{new}}-p_{\text{old}}\) | Standard resampling |
+| **Practical significance band (±0.5 pp)** | Separates “statistically nonzero” from “business-relevant” | Kohavi et al. trustworthy experimentation |
+| **BH-FDR country segment tests** | Safe exploratory segments | statsmodels `multipletests` |
+| **Power curve** vs n/arm for +1 pp MDE | Visual answer to EXTEND | `power_proportions_2indep` |
+| **Bayesian Beta–Binomial** \(P(p_{\text{new}}>p_{\text{old}})\) | Secondary communication of uncertainty | Uniform prior cross-check (not primary) |
+| **Production decision scorecard** | Explicit SHIP / HOLD / EXTEND gates incl. severe SRM | Experiment platform playbooks |
+
+### Side-by-side outputs (executed numbers)
+
+Primary effect estimates are intentionally **stable** across versions (same clean sample). New rows appear only where v2 adds methods.
+
+| Metric | Baseline v1 (first full run) | Production v2 (current notebook) | Change |
+|---|---|---|---|
+| Raw rows | 294,478 | 294,478 | Same |
+| Mismatched rows dropped | 3,893 (1.32%) | 3,893 (1.32%) | Same cleaning rule |
+| Cleaned unique users | **290,584** | **290,584** | Same |
+| Control n / rate | 145,274 / **12.0386%** | 145,274 / **12.0386%** | Same |
+| Treatment n / rate | 145,310 / **11.8808%** | 145,310 / **11.8808%** | Same |
+| Lift (new − old) | **−0.1578 pp** (−1.31% rel.) | **−0.1578 pp** (−1.31% rel.) | Same |
+| Control conversions | 17,489 | 17,489 | Same |
+| Treatment conversions | 17,264 | 17,264 | Same |
+| z-statistic | **−1.3109** | **−1.3109** | Same |
+| Two-sided p-value | **0.189883** | **0.189883** | Same → fail to reject \(H_0\) |
+| Analytic 95% CI (diff) | **[−0.003938, 0.000781]** | **[−0.003938, 0.000781]** | Same (includes 0) |
+| Arm 95% CI method | Normal approx | **Wilson** | Method upgrade |
+| Bootstrap 95% CI (diff) | *(not computed)* | **[−0.003973, 0.000769]** | **New** — agrees with analytic |
+| χ² proportions cross-check | *(not reported)* | Aligns with z-test (large-n) | **New** |
+| OR unadjusted (`ab_page`) | **0.9851** | **0.9851** | Same |
+| OR country-adjusted | **0.9852** (p=0.191245) | **0.9852** (p=0.191245) | Same |
+| Country × page interaction | Explored; weak | Explored; min interaction p not significant at 0.05 | Same conclusion |
+| SRM χ² p / imbalance | *(not computed)* | **0.946754** / **0.0062 pp** (not severe) | **New** — PASS |
+| n/arm for 80% power @ observed effect | 663,574 | 663,574 | Same |
+| n/arm for 80% power @ +1 pp MDE | 17,209 | 17,209 | Same |
+| Power @ +1 pp MDE (actual n) | **~100%** | **100.0%** | Same (now + power curve) |
+| Bayesian P(new > old) | *(not computed)* | **9.39%** | **New** — favors old page |
+| Segment FDR discoveries | *(not computed)* | **0** countries after BH-FDR | **New** |
+| Recommendation | **HOLD** | **HOLD** | Same call, stronger justification |
+| Decision packaging | Manager paragraph | Scorecard + manager summary | **New** |
+| Plot outputs in notebook | 3 | **6** | Richer diagnostics |
+| Code cells / errors (QA) | 14 / 0 | 14 / 0 | Clean re-execution |
+
+### Baseline v1 manager brief (preserved)
+
+From the original executed analysis (pre-production suite):
+
+```text
+Raw rows:                      294,478
+Mismatched group/page rows:    3,893  (dropped)
+After de-duplicate user_id:    290,584
+
+Old page (control):   12.0386%   n=145,274
+New page (treatment): 11.8808%   n=145,310
+Difference (new−old): -0.1578% absolute  (-1.31% relative)
+
+Two-proportion z-test (α=0.05, two-sided)
+  z = -1.3109
+  p = 0.189883   →  FAIL TO REJECT H0
+  95% CI for (p_new − p_old): [-0.003938, 0.000781]
+
+Logistic regression odds ratio for new page (ab_page)
+  Unadjusted OR:          0.9851
+  Country-adjusted OR:    0.9852   (p=0.191245)
+
+Power / sample size
+  n/arm for 80% power @ observed effect: 663,574
+  n/arm for 80% power @ +1 pp MDE:       17,209
+  Actual min arm n:                      145,274
+  Power for +1 pp MDE at actual n:       100.0%
+
+RECOMMENDATION: HOLD
+```
+
+### Production v2 manager brief (current run)
+
+```text
+Cleaned users: 290,584  |  merge n: 290,584
+Old page: 12.0386% (n=145,274)  |  New page: 11.8808% (n=145,310)
+Lift: -0.1578 pp  |  relative -1.31%
+z=-1.3109, p=0.189883, 95% CI diff=[-0.003938, 0.000781]
+Bootstrap 95% CI: [-0.003973, 0.000769]
+OR unadj=0.9851, OR country-adj=0.9852 (p=0.191245)
+SRM χ² p=0.946754, imbalance=0.0062pp, severe=False
+Power @ +1pp MDE: 100.0%  |  Bayesian P(new>old)=9.39%
+RECOMMENDATION: HOLD
+```
+
+### What improved between v1 and v2 (summary)
+
+1. **Integrity:** SRM shows the 50/50 assignment is healthy (p≈0.95, tiny imbalance).  
+2. **Robustness:** Bootstrap CI matches the analytic CI → lift estimate is not an artifact of one formula.  
+3. **Practical framing:** ±0.5 pp indifference band + +1 pp MDE power curve make EXTEND vs HOLD a quantitative call.  
+4. **Multi-method agreement:** Frequentist null + OR≈1 + Bayesian P(new better)≈9% all point the same way.  
+5. **Safer exploration:** Country peeks are FDR-controlled.  
+6. **Production UX:** Scorecard encodes gates (quality → SRM → significance → practical → power → recommend).
+
+Primary conversion metrics **did not get “better” for the new page** — and that is correct. The **analysis quality** got better.
 
 ---
 
@@ -214,7 +340,9 @@ Interpretation: the experiment is **underpowered for a microscopic observed gap*
 
 ## Evidence from the real run
 
-**Runtime fingerprint (executed notebook):**
+Numbers below are from the **current production v2** executed notebook. For the full **v1 baseline vs v2** table (old numbers preserved), see [Baseline vs production upgrade](#baseline-v1-vs-production-v2--outputs--techniques).
+
+**Runtime fingerprint (v2 executed notebook):**
 
 ```text
 Kernel target name: ab-test-marketing-project
@@ -229,7 +357,7 @@ Data load path: raw GitHub URLs (cached under data/)
 Notebook QA: 14 code cells · 0 empty outputs · 0 errors · 6 plot outputs
 ```
 
-### Conversion (cleaned A/B sample)
+### Conversion (cleaned A/B sample) — unchanged from v1
 
 | Arm | Conversions | n | Rate |
 |---|---:|---:|---:|
@@ -237,26 +365,32 @@ Notebook QA: 14 code cells · 0 empty outputs · 0 errors · 6 plot outputs
 | New page (treatment) | 17,264 | 145,310 | **11.8808%** |
 | Difference (new − old) | — | — | **−0.1578 pp** (−1.311% relative) |
 
-Wilson 95% CIs (per arm) are computed in the notebook (production-preferred vs plain normal).
+**v1:** normal-approx arm CIs. **v2:** Wilson score arm CIs (production-preferred for proportions).
 
-### Trustworthiness — SRM
+### Trustworthiness — SRM *(v2 only)*
 
 ```text
-SRM χ² p = 0.946754
+SRM χ² = 0.004460
+SRM p  = 0.946754
 Traffic imbalance = 0.0062 pp
 Severe SRM = False  → analysis may proceed
+SRM gate (p >= 0.001): PASS
 ```
 
 ### Hypothesis test + robustness
 
 ```text
+# Same primary test as v1
 z = -1.310924
 p = 0.189883   →  FAIL TO REJECT H0 at α = 0.05
 Analytic 95% CI for (p_new − p_old) = [-0.003938, 0.000781]   # includes 0
-Bootstrap 95% CI                    = [-0.003973, 0.000769]   # agrees
+
+# v2 additions
+Bootstrap 95% CI                    = [-0.003973, 0.000769]   # agrees with analytic
+proportions χ² cross-check          = consistent with z-test at this n
 ```
 
-### Logistic odds ratios (`ab_page` = new creative)
+### Logistic odds ratios (`ab_page` = new creative) — same point estimates as v1
 
 | Model | OR | Interpretation |
 |---|---:|---|
@@ -264,13 +398,23 @@ Bootstrap 95% CI                    = [-0.003973, 0.000769]   # agrees
 | Country-adjusted | 0.9852 (p = 0.191245) | Effect unchanged after country |
 | Interaction check | no strong country×page interaction | Use Model 2 as primary adjusted summary |
 
-### Bayesian secondary check
+### Bayesian secondary check *(v2 only)*
 
 ```text
-P(p_new > p_old | data) ≈ 9.39%   (uniform Beta–Binomial)
+P(p_new > p_old | data) = 9.3890%   (uniform Beta–Binomial, 100k MC draws)
+Central 95% posterior interval for lift includes values around the frequentist CI
 ```
 
-### Decision rule used (transparent, pre-structured)
+### Power *(same required-n math as v1; v2 adds curve)*
+
+| Check | Value |
+|---|---:|
+| n/arm for 80% power @ observed effect | 663,574 |
+| n/arm for 80% power @ +1 pp MDE | 17,209 |
+| Actual min arm n | 145,274 |
+| Power for +1 pp MDE at actual n | **100.0%** |
+
+### Decision rule used (transparent, pre-structured) — v2 scorecard
 
 ```text
 if severe SRM                         → HOLD (do not ship on broken randomization)
@@ -280,13 +424,13 @@ elif underpowered for +1 pp MDE       → EXTEND
 else                                  → HOLD
 ```
 
-**Applied outcome: HOLD.**
+**Applied outcome (v1 and v2): HOLD.**
 
-Rationale: no significant improvement; point estimate slightly negative; Bayesian P(new better) ≈ 9%; sample already large enough that a +1 pp win would almost certainly have been detected; SRM clean.
+**v2 rationale (stronger than v1):** no significant improvement; point estimate slightly negative; analytic **and** bootstrap CIs cover 0; OR≈0.985; Bayesian P(new better)≈9%; SRM clean; already powered for +1 pp MDE; no FDR country rescue of the new page.
 
-### Manager-ready brief (from executed summary cell)
+### Manager-ready brief (v2 executed summary cell)
 
-> On **290,584** cleaned users, the new marketing-campaign landing page converted at **11.88%** vs **12.04%** for the old page (**−0.158 pp**). z = **−1.31**, p = **0.190** (not significant). Analytic and bootstrap CIs both cover 0. Country-adjusted OR = **0.985**. SRM not severe. Power for +1 pp ≈ **100%**. Bayesian P(new better) ≈ **9%**. **Decision: HOLD.**
+> On **290,584** cleaned users, the new marketing-campaign landing page converted at **11.88%** vs **12.04%** for the old page (**−0.158 pp**). z = **−1.31**, p = **0.190** (not significant). Analytic CI **[−0.003938, 0.000781]** and bootstrap CI **[−0.003973, 0.000769]** both cover 0. Country-adjusted OR = **0.985**. SRM p = **0.947** (not severe). Power for +1 pp = **100%**. Bayesian P(new better) = **9.39%**. **Decision: HOLD.**
 
 ## Honest limitations
 
@@ -715,4 +859,9 @@ Please open issues with the appropriate template. For security-sensitive reports
 
 ## Bottom line
 
-This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, adjust with covariates without sliding into predictive ML, and turn numbers into a **HOLD** decision with power- and probability-backed reasoning. The null result is not a failure of the analysis — it is the analysis doing its job.
+| Version | What you get |
+|---|---|
+| **v1 baseline** | Clean data, z-test, logit ORs, power numbers, **HOLD** |
+| **v2 production** | Everything in v1 **plus** SRM, Wilson CIs, bootstrap, χ², BH-FDR, power curve, Bayesian P, scorecard — still **HOLD**, with multi-method confidence |
+
+This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, adjust with covariates without sliding into predictive ML, and turn numbers into a **HOLD** decision with power- and probability-backed reasoning. The null result is not a failure of the analysis — it is the analysis doing its job. **“Better results” here means a better, more trustworthy decision system — not a fabricated lift.**
