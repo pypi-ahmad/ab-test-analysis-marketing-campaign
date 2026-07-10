@@ -1,0 +1,35 @@
+name: Question
+description: Ask about methods, interpretation, or how to run the analysis
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For bugs, use the **Bug report** template. For new work, use **Feature request**.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Be as specific as possible (section, metric, or command)
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What you already tried, and what the notebook currently shows
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      options:
+        - Setup / install
+        - Data cleaning
+        - Hypothesis test interpretation
+        - Logistic odds ratios
+        - Power / ship-hold-extend decision
+        - Extending the analysis
+        - Other
+    validations:
+      required: true

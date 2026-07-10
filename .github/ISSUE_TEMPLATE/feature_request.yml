@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose an improvement that stays within inferential A/B analysis
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the improvement and why it helps this repository.
+        Prefer analysis clarity, reproducibility, teaching, or decision quality
+        over adding unrelated ML stacks.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What gap exists today?
+      placeholder: Power section does not show a curve of power vs sample size…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should change in the notebook, docs, or tooling?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about (optional)
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Data cleaning / validation
+        - EDA / visualization
+        - Hypothesis testing
+        - Logistic regression / effect size
+        - Power / sample size
+        - Documentation / teaching
+        - Reproducibility / tooling
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope confirmation
+      options:
+        - label: This stays within inferential statistics (not a request for predictive AutoML / RAG / local LLMs)
+          required: true

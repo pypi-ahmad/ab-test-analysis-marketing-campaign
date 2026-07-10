@@ -643,6 +643,14 @@ Use of the data remains subject to the source’s terms. This repository’s **M
 
 ---
 
+## Contributing & community
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, run checks, PR expectations  
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant  
+- [Issue templates](.github/ISSUE_TEMPLATE/) — bug report, feature request, question  
+
+Please open issues with the appropriate template. For security-sensitive reports, contact the owner privately rather than filing a public issue.
+
 ## License
 
 [MIT](LICENSE) © 2026 Ahmad — for this project’s code and docs.

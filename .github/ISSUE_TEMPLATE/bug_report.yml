@@ -1,0 +1,67 @@
+name: Bug report
+description: Something broken in install, data load, notebook execution, or statistical code
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include enough detail to reproduce it.
+        This project is **inferential A/B testing** (not predictive ML).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong in one or two sentences?
+      placeholder: nbconvert fails on the logistic regression cell with …
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands and where you ran them
+      placeholder: |
+        1. uv sync
+        2. uv run jupyter nbconvert --execute …
+        3. Error appears at Part X
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: Notebook executes with non-empty outputs and no errors
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Paste the full error traceback or unexpected output
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Linux / macOS / Windows (WSL)
+  - type: input
+    id: python
+    attributes:
+      label: Python / uv versions
+      placeholder: "Python 3.13.13, uv 0.x"
+  - type: input
+    id: packages
+    attributes:
+      label: Key package versions
+      description: From the notebook setup cell if available
+      placeholder: "statsmodels 0.14.6, pandas 3.0.3, scipy 1.18.0"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I re-ran with a clean `uv sync` environment
+        - label: I confirmed the issue is not only a missing network path for the CSVs
+        - label: I searched existing issues for a duplicate
