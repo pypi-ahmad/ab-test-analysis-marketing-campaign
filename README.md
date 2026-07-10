@@ -149,7 +149,7 @@ This section is written for technical reviewers: architecture choices, reproduci
 
 Interpretation: the experiment is **underpowered for a microscopic observed gap** (as expected) but **overpowered for a marketing-relevant +1 pp lift**. Combined with a near-zero / slightly negative estimate, the rational decision is **HOLD**, not EXTEND.
 
-### Decision 6 — Dual notebook representation (jupytext + executed ipynb)
+### Decision 7 — Dual notebook representation (jupytext + executed ipynb)
 
 **Choice:** Author as percent-format `.py`, convert to `.ipynb`, execute with `nbconvert` so committed outputs are real.
 
