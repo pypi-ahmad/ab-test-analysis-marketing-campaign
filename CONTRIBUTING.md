@@ -35,6 +35,8 @@ uv run python -m ipykernel install --user --name ab-test-marketing-project
 
 ## Run the analysis
 
+**Baseline learning notebook** (do not remove; keep for teaching):
+
 ```bash
 # Preferred: execute the notebook end-to-end
 uv run jupyter nbconvert --to notebook --execute \
@@ -43,6 +45,23 @@ uv run jupyter nbconvert --to notebook --execute \
   --ExecutePreprocessor.kernel_name=ab-test-marketing-project \
   --ExecutePreprocessor.timeout=600
 ```
+
+**Advanced v3 package / CLI** (additive):
+
+```bash
+uv run ab-test run
+uv run ab-test scorecard
+uv run ab-test simulate
+uv run ab-test report
+
+uv run jupyter nbconvert --to notebook --execute \
+  notebooks/02_advanced_production_upgrades.ipynb \
+  --output 02_advanced_production_upgrades.ipynb \
+  --ExecutePreprocessor.kernel_name=ab-test-marketing-project \
+  --ExecutePreprocessor.timeout=900
+```
+
+Tutorials: `tutorials/README.md`.
 
 Or edit the jupytext source, then convert:
 

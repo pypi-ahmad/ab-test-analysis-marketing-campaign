@@ -6,16 +6,22 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | | |
 |---|---|
-| **Current recommendation (v2 production run)** | **HOLD** the old campaign creative |
+| **Current recommendation (v3 advanced + v2 notebook)** | **HOLD** the old campaign creative |
 | **Primary p-value (two-sided)** | **0.189883** (fail to reject \(H_0\) at α = 0.05) |
 | **Observed lift (new − old)** | **−0.1578 percentage points** |
-| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** *(new in v2)* |
+| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** *(since v2)* |
 | **Country-adjusted odds ratio** | **0.9852** |
-| **SRM** | p = **0.946754**, imbalance **0.0062 pp** (not severe) *(new in v2)* |
-| **Bayesian P(new > old)** | **9.39%** (uniform Beta–Binomial) *(new in v2)* |
+| **SRM** | p = **0.946754**, imbalance **0.0062 pp** (not severe) *(since v2)* |
+| **TOST equivalent (±0.5 pp)** | **True** *(new in v3)* |
+| **ITT vs as-treated agreement** | **YES** (both HOLD) *(new in v3)* |
+| **Bayesian P(new > old)** | **~9.4–9.6%** (uniform Beta–Binomial) |
 | **Power for a +1 pp absolute MDE** | **~100%** at actual sample size |
+| **Simulation: true +1 pp / +2 pp** | Pipeline recovers **SHIP** *(new in v3)* |
 
-> **What “better results” means here:** We improved **decision quality and trustworthiness**, not conversion. The creative still does not win. Production upgrades add SRM, Wilson CIs, bootstrap, χ² cross-check, BH-FDR segments, a power curve, Bayesian confirmation, and an explicit scorecard — so **HOLD** is multi-method, not a single p-value. Full **v1 vs v2** tables: [Baseline vs production upgrade](#baseline-v1-vs-production-v2--outputs--techniques).
+> **What “better results” means here:** We improved **decision quality and trustworthiness**, not conversion. The creative still does not win.  
+> - **v1 → v2:** SRM, Wilson CIs, bootstrap, χ², FDR, power curve, Bayesian, scorecard narrative ([comparison](#baseline-v1-vs-production-v2--outputs--techniques)).  
+> - **v2 → v3:** TOST equivalence, ITT sensitivity, simulation harness, CUPED teaching demo, CLI + `metrics.json` + HTML ([v3 section](#advanced-v3--package-cli-tutorials)).  
+> Baseline notebook files are **kept unchanged for learning**.
 
 ---
 
@@ -23,9 +29,9 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | Audience | What to read first |
 |---|---|
-| **Portfolio / technical evaluators** | [v1 vs v2 comparison](#baseline-v1-vs-production-v2--outputs--techniques), [Architecture](#1-for-portfolio-evaluators), [Evidence](#evidence-from-the-real-run), [Limitations](#honest-limitations) |
-| **Hands-on operators** | [Quick start](#2-for-hands-on-users), [Re-run & troubleshooting](#re-run-the-full-pipeline), [Extending the analysis](#extending-the-local-workflow) |
-| **Tutorial learners** | [Concepts before code](#3-for-tutorial-learners), [End-to-end flow](#implementation-flow-end-to-end), [How to read each metric](#how-to-read-the-metrics) |
+| **Portfolio / technical evaluators** | [v1 vs v2](#baseline-v1-vs-production-v2--outputs--techniques), [v3 advanced](#advanced-v3--package-cli-tutorials), [Architecture](#1-for-portfolio-evaluators) |
+| **Hands-on operators** | [Quick start](#2-for-hands-on-users), [CLI](#cli-advanced-v3), [Re-run](#re-run-the-full-pipeline) |
+| **Tutorial learners** | [tutorials/](tutorials/README.md), baseline notebook, [advanced notebook](notebooks/02_advanced_production_upgrades.ipynb) |
 
 ---
 
@@ -152,6 +158,80 @@ RECOMMENDATION: HOLD
 6. **Production UX:** Scorecard encodes gates (quality → SRM → significance → practical → power → recommend).
 
 Primary conversion metrics **did not get “better” for the new page** — and that is correct. The **analysis quality** got better.
+
+---
+
+## Advanced v3 — package, CLI, tutorials
+
+**Design rule:** do **not** rewrite or delete the baseline notebook. v3 is additive.
+
+| Path | Role |
+|---|---|
+| `notebooks/ab_test_marketing_analysis.ipynb` | **Unchanged** baseline/v2 learning notebook |
+| `notebooks/02_advanced_production_upgrades.ipynb` | **New** executed advanced tutorial |
+| `ab_test/` | Importable package (cleaning, SRM, TOST, sim, CUPED, scorecard, CLI) |
+| `tutorials/` | Conceptual lessons (why each upgrade) |
+| `metrics/latest.json` | Machine-readable decision metrics |
+| `artifacts/decision_report.html` | Manager-facing HTML memo |
+
+### New techniques in v3 (and why)
+
+| Technique | Why we do it | How it improves the “result” | Live outcome on this data |
+|---|---|---|---|
+| **TOST equivalence (±0.5 pp)** | “Not significant” ≠ “practically the same” | Formal language for indifference | **Equivalent = True** (p_lo≈0.0022, p_hi≈2.3e-8) |
+| **ITT vs as-treated** | Exposure logging can be wrong | Recommendation robust to cleaning policy | **Both HOLD**, agreement **YES** |
+| **Simulation harness** | Prove pipeline is not hard-coded HOLD | Recovers SHIP when true lift is large | True +1 pp / +2 pp → **SHIP**; null → **HOLD** |
+| **CUPED demo (synthetic pre-period)** | Teach production variance reduction | Literacy + hook for real covariates | ~**0.6%** var reduction on synthetic X (demo only) |
+| **CLI + metrics.json + HTML** | Operator / CI surface | Repeatable artifacts | `uv run ab-test run\|scorecard\|simulate\|report` |
+
+### v3 outputs (from `uv run ab-test run`)
+
+```text
+Clean n (as-treated): 290,584
+Rates: control=12.0386%  treatment=11.8808%  diff=-0.1578 pp
+z=-1.3109  p=0.189883
+CI=[-0.003938, 0.000781]  boot=[-0.003973, 0.000769]
+SRM p=0.946754  imbalance=0.0062pp  severe=False
+TOST equivalent (±0.50pp): True
+Bayesian P(new>old)≈9.6%
+ITT: rec=HOLD  agree=YES
+RECOMMENDATION: HOLD
+```
+
+### Simulation suite (from `uv run ab-test simulate`)
+
+| Scenario | True lift | Observed (example run) | Significant | Rec |
+|---|---:|---:|---|---|
+| true_null_lift_0 | 0.00 pp | ~0.02 pp | False | **HOLD** |
+| true_tiny_lift_plus_0.1pp | +0.10 pp | ~0.24 pp | False | **HOLD** |
+| true_mde_lift_plus_1pp | +1.00 pp | ~1.06 pp | True | **SHIP** |
+| true_large_lift_plus_2pp | +2.00 pp | ~1.93 pp | True | **SHIP** |
+| true_negative_lift_minus_1pp | −1.00 pp | ~−1.08 pp | True | **HOLD** |
+
+This is the key “awesome” proof: **the system can ship when the truth is a real lift** — it just refuses to ship this Udacity creative.
+
+### CLI (advanced v3)
+
+```bash
+uv sync
+
+uv run ab-test run          # analysis → metrics/latest.json
+uv run ab-test scorecard    # print gates
+uv run ab-test simulate     # known-truth calibration
+uv run ab-test report       # metrics.json + artifacts/decision_report.html
+```
+
+### Tutorials (explanations)
+
+Start at [`tutorials/README.md`](tutorials/README.md):
+
+0. Learning path (keep old notebook)  
+1. Trustworthiness gates  
+2. TOST equivalence  
+3. ITT vs as-treated  
+4. Simulation harness  
+5. CUPED demo  
+6. CLI / metrics / HTML
 
 ---
 
@@ -859,9 +939,10 @@ Please open issues with the appropriate template. For security-sensitive reports
 
 ## Bottom line
 
-| Version | What you get |
-|---|---|
-| **v1 baseline** | Clean data, z-test, logit ORs, power numbers, **HOLD** |
-| **v2 production** | Everything in v1 **plus** SRM, Wilson CIs, bootstrap, χ², BH-FDR, power curve, Bayesian P, scorecard — still **HOLD**, with multi-method confidence |
+| Version | What you get | Learning artifact |
+|---|---|---|
+| **v1 baseline** | Clean data, z-test, logit ORs, power, **HOLD** | Preserved in README tables + original notebook history |
+| **v2 production** | + SRM, Wilson, bootstrap, χ², FDR, power curve, Bayesian, scorecard | `notebooks/ab_test_marketing_analysis.ipynb` (**kept**) |
+| **v3 advanced** | + TOST, ITT sensitivity, simulation, CUPED demo, CLI/JSON/HTML | `02_advanced_*.ipynb`, `ab_test/`, `tutorials/` |
 
-This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, adjust with covariates without sliding into predictive ML, and turn numbers into a **HOLD** decision with power- and probability-backed reasoning. The null result is not a failure of the analysis — it is the analysis doing its job. **“Better results” here means a better, more trustworthy decision system — not a fabricated lift.**
+This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, prove calibration via simulation, and export operator artifacts — then still make an honest **HOLD** call when the creative does not win. **“Better results” means a better decision system — not a fabricated lift.**
