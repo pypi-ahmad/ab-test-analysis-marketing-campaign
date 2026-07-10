@@ -6,22 +6,25 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | | |
 |---|---|
-| **Current recommendation (v3 advanced + v2 notebook)** | **HOLD** the old campaign creative |
+| **Current recommendation (v3)** | **HOLD** the old campaign creative |
 | **Primary p-value (two-sided)** | **0.189883** (fail to reject \(H_0\) at α = 0.05) |
-| **Observed lift (new − old)** | **−0.1578 percentage points** |
-| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** *(since v2)* |
-| **Country-adjusted odds ratio** | **0.9852** |
-| **SRM** | p = **0.946754**, imbalance **0.0062 pp** (not severe) *(since v2)* |
-| **TOST equivalent (±0.5 pp)** | **True** *(new in v3)* |
-| **ITT vs as-treated agreement** | **YES** (both HOLD) *(new in v3)* |
-| **Bayesian P(new > old)** | **~9.4–9.6%** (uniform Beta–Binomial) |
-| **Power for a +1 pp absolute MDE** | **~100%** at actual sample size |
-| **Simulation: true +1 pp / +2 pp** | Pipeline recovers **SHIP** *(new in v3)* |
+| **Observed lift (new − old)** | **−0.1578 pp** (12.0386% → 11.8808%) |
+| **Analytic 95% CI (diff)** | **[−0.003938, 0.000781]** |
+| **Bootstrap 95% CI (diff)** | **[−0.003973, 0.000769]** *(v2+)* |
+| **Country-adjusted OR** | **0.9852** |
+| **SRM** | p = **0.946754**, imbalance **0.0062 pp** (not severe) *(v2+)* |
+| **TOST equivalent (±0.5 pp)** | **True** (p_lo=**0.00224**, p_hi=**2.33e-08**) *(v3)* |
+| **ITT sensitivity** | diff=**−0.1455 pp**, p=**0.2269**, rec=**HOLD**, agree=**YES** *(v3)* |
+| **Bayesian P(new > old)** | **9.568%** (`metrics/latest.json`) *(v2/v3)* |
+| **Power for +1 pp MDE** | **~100%** |
+| **Simulation calibration** | true +1/+2 pp → **SHIP**; true 0 → **HOLD** *(v3)* |
 
-> **What “better results” means here:** We improved **decision quality and trustworthiness**, not conversion. The creative still does not win.  
-> - **v1 → v2:** SRM, Wilson CIs, bootstrap, χ², FDR, power curve, Bayesian, scorecard narrative ([comparison](#baseline-v1-vs-production-v2--outputs--techniques)).  
-> - **v2 → v3:** TOST equivalence, ITT sensitivity, simulation harness, CUPED teaching demo, CLI + `metrics.json` + HTML ([v3 section](#advanced-v3--package-cli-tutorials)).  
-> Baseline notebook files are **kept unchanged for learning**.
+> **How to read this README’s version history (nothing removed):**  
+> 1. [v1 vs v2](#baseline-v1-vs-production-v2--outputs--techniques) — original baseline numbers **kept**, production gates added.  
+> 2. [v1 / v2 / v3 three-way comparison](#results-comparison-v1-vs-v2-vs-v3) — full side-by-side + what changed.  
+> 3. [Advanced v3](#advanced-v3--package-cli-tutorials) — new package, CLI, tutorials, simulation.  
+>
+> **“Better results” = better decision system**, not a higher conversion rate for the new page.
 
 ---
 
@@ -29,7 +32,7 @@ This repository is a **production-minded, fully executed Jupyter analysis** of a
 
 | Audience | What to read first |
 |---|---|
-| **Portfolio / technical evaluators** | [v1 vs v2](#baseline-v1-vs-production-v2--outputs--techniques), [v3 advanced](#advanced-v3--package-cli-tutorials), [Architecture](#1-for-portfolio-evaluators) |
+| **Portfolio / technical evaluators** | [Three-way results](#results-comparison-v1-vs-v2-vs-v3), [v1 vs v2](#baseline-v1-vs-production-v2--outputs--techniques), [v3](#advanced-v3--package-cli-tutorials) |
 | **Hands-on operators** | [Quick start](#2-for-hands-on-users), [CLI](#cli-advanced-v3), [Re-run](#re-run-the-full-pipeline) |
 | **Tutorial learners** | [tutorials/](tutorials/README.md), baseline notebook, [advanced notebook](notebooks/02_advanced_production_upgrades.ipynb) |
 
@@ -161,6 +164,93 @@ Primary conversion metrics **did not get “better” for the new page** — and
 
 ---
 
+## Results comparison: v1 vs v2 vs v3
+
+This section **does not replace** the v1/v2 tables above. It stacks **all three generations** so you can see what stayed the same and what was added.
+
+### Same dataset, same core business answer
+
+Across v1, v2, and v3 we analyze the same Udacity e-commerce log with the same primary cleaning rule (as-treated) and α = 0.05.
+
+| Core business metric | v1 baseline | v2 production notebook | v3 advanced package (`metrics/latest.json`) | Changed? |
+|---|---:|---:|---:|---|
+| Cleaned users (as-treated) | 290,584 | 290,584 | **290,584** | No |
+| Old page conversion | 12.0386% | 12.0386% | **12.0386%** | No |
+| New page conversion | 11.8808% | 11.8808% | **11.8808%** | No |
+| Lift (new − old) | −0.1578 pp | −0.1578 pp | **−0.1578 pp** | No |
+| z-statistic | −1.3109 | −1.3109 | **−1.3109** | No |
+| Two-sided p-value | 0.189883 | 0.189883 | **0.189883** | No |
+| Analytic 95% CI (diff) | [−0.003938, 0.000781] | [−0.003938, 0.000781] | **[−0.003938, 0.000781]** | No |
+| OR country-adjusted | 0.9852 | 0.9852 | 0.9852 *(notebook v2; package focuses on proportions/TOST/ITT)* | No change to story |
+| Power @ +1 pp MDE | ~100% | 100% | **~100%** | No |
+| **Recommendation** | **HOLD** | **HOLD** | **HOLD** | **Same call** |
+
+**Explanation:** v3 does **not** “beat” v1/v2 by inventing a win for the new page. The conversion science is stable. What improved is everything *around* that call: integrity checks, equivalence language, sensitivity, calibration, and exportable ops artifacts.
+
+### What each version *added* (techniques & outputs)
+
+| Capability | v1 | v2 | v3 | Why it matters |
+|---|:-:|:-:|:-:|---|
+| Mismatch/dupe cleaning + before/after counts | yes | yes | yes | Valid exposure |
+| Two-proportion z-test + analytic CI | yes | yes | yes | Primary OEC test |
+| Logit odds ratios ± country | yes | yes | (baseline notebook) | Covariate adjustment |
+| SRM χ² gate | — | **yes** | **yes** | Randomization health |
+| Wilson arm CIs | — | **yes** | — *(notebook)* | Better proportion intervals |
+| Bootstrap CI for lift | — | **yes** | **yes** | Nonparametric robustness |
+| Bayesian P(new > old) | — | **~9.4%** | **9.568%** | Secondary probability language |
+| Power curve for MDE | — | **yes** | power numbers in metrics | EXTEND vs HOLD math |
+| **TOST equivalence (±0.5 pp)** | — | — | **True** | “Practically the same” is formal, not hand-wavy |
+| **ITT vs as-treated** | — | — | **agree=YES** | Decision robust to cleaning policy |
+| **Simulation harness** | — | — | **SHIP when true lift large** | Pipeline not hard-coded to HOLD |
+| **CUPED teaching demo** | — | — | **~0.60% var / ~0.30% SE red.** | Variance-reduction literacy (synthetic X) |
+| **CLI + metrics.json + HTML** | — | — | **yes** | Operator / portfolio artifacts |
+| Tutorials (`tutorials/`) | — | — | **yes** | Why/how of each upgrade |
+
+### v3-only numbers (new; do not replace v1/v2)
+
+From the executed advanced pipeline (`uv run ab-test run` → `metrics/latest.json`):
+
+| New metric | Value | How to read it |
+|---|---|---|
+| TOST equivalent (±0.5 pp) | **True** | We can claim the true lift is inside the practical indifference band (not just “failed to find a difference”). |
+| TOST p_lower / p_upper | **0.00224** / **2.33e-08** | Both one-sided tests reject at α=0.05 → equivalence. |
+| ITT lift / p-value | **−0.1455 pp** / **0.2269** | Still null under assignment-based analysis. |
+| ITT recommendation | **HOLD** | Same ship/hold family as as-treated. |
+| ITT agreement | **YES** | Cleaning policy does not flip the decision. |
+| Bayesian P(new > old) | **9.568%** | Posterior odds favor the old page, consistent with negative point estimate. |
+| CUPED demo var reduction | **0.596%** | Synthetic pre-period only — teaching, not a free real-world lift. |
+| CUPED demo SE(diff) reduction | **0.299%** | Same caveat: demo covariate, not in raw CSV. |
+
+### Narrative: what got better from v1 → v2 → v3
+
+**v1 (baseline learning path)**  
+Enough to teach a clean A/B story: fix messy rows, run a z-test, fit a simple logit, check power, say **HOLD**.  
+*Gap:* no explicit randomization health check, no bootstrap, no formal equivalence, no sensitivity policy, no proof the pipeline can SHIP.
+
+**v2 (production-minded notebook — still the main teaching notebook)**  
+Adds Microsoft/DoorDash-style **trustworthiness**: SRM, Wilson CIs, bootstrap, χ² cross-check, Bayesian secondary view, power curve, scorecard language.  
+*Same HOLD*, but multi-method: CI covers 0, OR≈1, Bayesian P(new better)≪50%, power already huge for +1 pp.  
+*Gap:* still notebook-centric; no TOST; no ITT; no simulation calibration; no CLI artifacts.
+
+**v3 (advanced package — additive)**  
+Keeps v1/v2 artifacts **untouched for learning**, then adds:
+
+1. **TOST** — upgrades “not significant” into “equivalent within ±0.5 pp” (**True** here).  
+2. **ITT sensitivity** — proves HOLD survives an alternate cleaning philosophy.  
+3. **Simulation** — proves the system **will SHIP** when true lift is +1 pp or +2 pp, so HOLD on Udacity data is evidence, not a broken analyzer.  
+4. **CUPED demo** — teaches how production variance reduction works when pre-period data exist.  
+5. **CLI / JSON / HTML** — makes the decision reviewable outside the notebook.
+
+### One-paragraph manager comparison
+
+| Version | What you would tell a marketing manager |
+|---|---|
+| **v1** | “New page is not significantly better (p≈0.19). HOLD.” |
+| **v2** | “Same HOLD. Randomization looks healthy (SRM), bootstrap agrees, Bayesian chance new is better ≈9%, and we were powered for a +1 pp win.” |
+| **v3** | “Same HOLD, now stronger: rates are **practically equivalent within ±0.5 pp (TOST)**, ITT agrees, and simulations show we *would* ship a real +1–2 pp lift — so we’re not missing a winner; we’re correctly rejecting a non-winner.” |
+
+---
+
 ## Advanced v3 — package, CLI, tutorials
 
 **Design rule:** do **not** rewrite or delete the baseline notebook. v3 is additive.
@@ -171,44 +261,53 @@ Primary conversion metrics **did not get “better” for the new page** — and
 | `notebooks/02_advanced_production_upgrades.ipynb` | **New** executed advanced tutorial |
 | `ab_test/` | Importable package (cleaning, SRM, TOST, sim, CUPED, scorecard, CLI) |
 | `tutorials/` | Conceptual lessons (why each upgrade) |
-| `metrics/latest.json` | Machine-readable decision metrics |
+| `metrics/latest.json` | Machine-readable decision metrics (source of v3 numbers above) |
 | `artifacts/decision_report.html` | Manager-facing HTML memo |
 
 ### New techniques in v3 (and why)
 
 | Technique | Why we do it | How it improves the “result” | Live outcome on this data |
 |---|---|---|---|
-| **TOST equivalence (±0.5 pp)** | “Not significant” ≠ “practically the same” | Formal language for indifference | **Equivalent = True** (p_lo≈0.0022, p_hi≈2.3e-8) |
-| **ITT vs as-treated** | Exposure logging can be wrong | Recommendation robust to cleaning policy | **Both HOLD**, agreement **YES** |
+| **TOST equivalence (±0.5 pp)** | “Not significant” ≠ “practically the same” | Formal language for indifference | **Equivalent = True** (p_lo=0.00224, p_hi=2.33e-08) |
+| **ITT vs as-treated** | Exposure logging can be wrong | Recommendation robust to cleaning policy | As-treated HOLD; ITT HOLD; **agree=YES** |
 | **Simulation harness** | Prove pipeline is not hard-coded HOLD | Recovers SHIP when true lift is large | True +1 pp / +2 pp → **SHIP**; null → **HOLD** |
-| **CUPED demo (synthetic pre-period)** | Teach production variance reduction | Literacy + hook for real covariates | ~**0.6%** var reduction on synthetic X (demo only) |
+| **CUPED demo (synthetic pre-period)** | Teach production variance reduction | Literacy + hook for real covariates | **0.596%** var / **0.299%** SE reduction (demo only) |
 | **CLI + metrics.json + HTML** | Operator / CI surface | Repeatable artifacts | `uv run ab-test run\|scorecard\|simulate\|report` |
 
-### v3 outputs (from `uv run ab-test run`)
+### v3 outputs (from `uv run ab-test run` / `metrics/latest.json`)
 
 ```text
+version: advanced_v3
 Clean n (as-treated): 290,584
 Rates: control=12.0386%  treatment=11.8808%  diff=-0.1578 pp
 z=-1.3109  p=0.189883
-CI=[-0.003938, 0.000781]  boot=[-0.003973, 0.000769]
+Analytic CI = [-0.003938, 0.000781]
+Bootstrap CI = [-0.003973, 0.000769]
 SRM p=0.946754  imbalance=0.0062pp  severe=False
-TOST equivalent (±0.50pp): True
-Bayesian P(new>old)≈9.6%
-ITT: rec=HOLD  agree=YES
+TOST equivalent (±0.50pp): True  (p_lo=0.00224, p_hi=2.33e-08)
+Bayesian P(new>old)=9.568%
+ITT: diff=-0.1455 pp, p=0.2269, rec=HOLD, agree=YES
+CUPED demo: var reduction=0.596%  SE reduction=0.299%  (synthetic pre-period)
 RECOMMENDATION: HOLD
+Reason: No significant improvement; experiment already powered for a business-relevant MDE.
+        Keep the old campaign creative.
 ```
+
+### v3 manager brief (current advanced run)
+
+> On **290,584** cleaned users (as-treated), the new campaign landing page converted at **11.8808%** vs **12.0386%** on the old page (**−0.1578 pp**). The two-proportion z-test is not significant (**z = −1.31**, **p = 0.189883**); the analytic and bootstrap 95% CIs both include 0. **TOST** supports practical equivalence within **±0.5 pp**. **ITT** (assignment-based) also yields **HOLD** (p = 0.2269). Bayesian **P(new > old) ≈ 9.6%**. Power for a **+1 pp** MDE is essentially **100%**. Simulation shows the same pipeline **SHIPs** when the true lift is +1–2 pp. **Decision: HOLD** the old creative.
 
 ### Simulation suite (from `uv run ab-test simulate`)
 
-| Scenario | True lift | Observed (example run) | Significant | Rec |
+| Scenario | True lift | Observed (seeded run) | Significant | Rec |
 |---|---:|---:|---|---|
-| true_null_lift_0 | 0.00 pp | ~0.02 pp | False | **HOLD** |
-| true_tiny_lift_plus_0.1pp | +0.10 pp | ~0.24 pp | False | **HOLD** |
-| true_mde_lift_plus_1pp | +1.00 pp | ~1.06 pp | True | **SHIP** |
-| true_large_lift_plus_2pp | +2.00 pp | ~1.93 pp | True | **SHIP** |
-| true_negative_lift_minus_1pp | −1.00 pp | ~−1.08 pp | True | **HOLD** |
+| true_null_lift_0 | 0.00 pp | 0.020 pp | False | **HOLD** |
+| true_tiny_lift_plus_0.1pp | +0.10 pp | 0.236 pp | False | **HOLD** |
+| true_mde_lift_plus_1pp | +1.00 pp | 1.064 pp | True | **SHIP** |
+| true_large_lift_plus_2pp | +2.00 pp | 1.927 pp | True | **SHIP** |
+| true_negative_lift_minus_1pp | −1.00 pp | −1.082 pp | True | **HOLD** |
 
-This is the key “awesome” proof: **the system can ship when the truth is a real lift** — it just refuses to ship this Udacity creative.
+This is the key calibration proof: **the system can ship when the truth is a real lift** — it just refuses to ship this Udacity creative.
 
 ### CLI (advanced v3)
 
@@ -939,10 +1038,13 @@ Please open issues with the appropriate template. For security-sensitive reports
 
 ## Bottom line
 
-| Version | What you get | Learning artifact |
-|---|---|---|
-| **v1 baseline** | Clean data, z-test, logit ORs, power, **HOLD** | Preserved in README tables + original notebook history |
-| **v2 production** | + SRM, Wilson, bootstrap, χ², FDR, power curve, Bayesian, scorecard | `notebooks/ab_test_marketing_analysis.ipynb` (**kept**) |
-| **v3 advanced** | + TOST, ITT sensitivity, simulation, CUPED demo, CLI/JSON/HTML | `02_advanced_*.ipynb`, `ab_test/`, `tutorials/` |
+| Version | Core product call | What got better | Where to look |
+|---|---|---|---|
+| **v1 baseline** | **HOLD** | First honest analysis | README v1 tables (preserved) |
+| **v2 production notebook** | **HOLD** (same rates/p) | SRM, bootstrap, Bayesian, power curve, multi-method confidence | `ab_test_marketing_analysis.ipynb` (**kept**) |
+| **v3 advanced package** | **HOLD** (same rates/p) + **TOST equivalent**, **ITT agree**, **sim can SHIP** | Formal equivalence, sensitivity, calibration, CLI/JSON/HTML | `02_advanced_*.ipynb`, `ab_test/`, `metrics/latest.json` |
+
+**Comparison in one sentence:**  
+v1 found HOLD; v2 made HOLD *trustworthy*; v3 made HOLD *auditable, policy-robust, and calibrated* — without changing the fact that the new page did not win.
 
 This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, prove calibration via simulation, and export operator artifacts — then still make an honest **HOLD** call when the creative does not win. **“Better results” means a better decision system — not a fabricated lift.**
