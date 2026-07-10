@@ -159,7 +159,7 @@ Interpretation: the experiment is **underpowered for a microscopic observed gap*
 - Executed `.ipynb` is the portfolio artifact with plots and printed metrics.  
 - CI-style re-execution is one command.
 
-### Decision 7 — Flat project layout, uv-only environment
+### Decision 8 — Flat project layout, uv-only environment
 
 ```text
 .
