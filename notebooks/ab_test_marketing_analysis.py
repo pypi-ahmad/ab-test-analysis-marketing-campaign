@@ -12,38 +12,47 @@
 # ---
 
 # %% [markdown]
-# # A/B Test Analysis: Marketing Campaign Landing Page
+# # Production-Grade A/B Test Analysis
+# ## Marketing Campaign Landing Page Creatives
 #
-# **Business decision:** Should the company **ship** the new marketing-campaign landing page creative, **hold** the existing (old) creative, or **extend** the experiment to collect more data?
+# **Decision:** **SHIP** the new campaign landing page, **HOLD** the current creative, or **EXTEND** the experiment?
 #
 # This notebook analyzes a real e-commerce experiment that randomly assigned users to one of **two creative versions of a marketing campaign landing page**:
 #
-# | Assignment | Landing page shown | Role |
+# | Assignment | Landing page | Role |
 # |---|---|---|
 # | `control` | `old_page` | Current campaign creative |
 # | `treatment` | `new_page` | Proposed new campaign creative |
 #
-# The outcome is binary conversion (`converted` = 1 if the user converted, else 0).
+# Outcome: binary conversion (`converted` ∈ {0, 1}).
 #
 # ---
 #
-# ## What this notebook is (and is not)
+# ## What this is (and is not)
 #
-# This is **inferential statistics**, not predictive machine learning.
+# This is **inferential experiment analysis**, not predictive machine learning.
 #
-# - We estimate whether conversion *differs* between the two campaign creatives (two-proportion z-test).
-# - We estimate the *size* of that difference and whether it holds after adjusting for country (logistic regression for effect size / covariates).
-# - We check whether the sample was large enough to detect a business-relevant lift (power / sample-size sanity check).
+# Production experimentation platforms (Microsoft ExP, DoorDash, Eppo, Statsig, and the Kohavi et al. *Trustworthy Online Controlled Experiments* playbook) emphasize **trustworthiness gates** before effect estimation: sample-ratio mismatch (SRM), data-quality filters, practical significance, power for a pre-stated MDE, and multi-method confirmation.
 #
-# There is **no model to train**, no train/test split, no accuracy score, and no “best model” section. Those tools answer a different question (“can we predict conversion?”). Here the question is causal-ish experiment inference: **did the new creative change conversion, and should we ship it?**
+# There is **no model to train**, no accuracy score, no AutoML. Logistic regression is used only for **effect-size / covariate adjustment** (odds ratios). A lightweight Bayesian Beta–Binomial view is included as a **secondary cross-check**, not a replacement for the primary frequentist test.
 #
-# **Audience path:** each section teaches *why* before *how*, then interprets the **actual numbers** this dataset produces.
+# **Important honesty constraint:** “Production-grade” means production **methodology**. It does **not** mean forcing a “win.” If the cleaned data show a null / slightly negative lift, a production system should **HOLD**, not invent significance.
+#
+# ### Method stack (this notebook)
+#
+# 1. Data acquisition + schema validation  
+# 2. Quality cleaning (mismatches, duplicates)  
+# 3. **Trustworthiness gate: SRM** (χ² goodness-of-fit vs 50/50)  
+# 4. EDA (rates, Wilson CIs, time trend, country)  
+# 5. Primary effect: two-proportion z-test + Newcombe-style CI  
+# 6. Robustness: χ² independence, bootstrap CI  
+# 7. Covariate-adjusted logit (odds ratios ± country)  
+# 8. Practical significance + power / MDE  
+# 9. Optional Bayesian P(new > old)  
+# 10. Production decision scorecard → SHIP / HOLD / EXTEND  
 
 # %% [markdown]
 # ## 1. Setup
-#
-# We use the `ab-test-marketing-project` kernel (uv-managed environment). The analysis depends only on:
-# `pandas`, `numpy`, `scipy`, `statsmodels`, `matplotlib`, and `seaborn`.
 
 # %%
 from __future__ import annotations
@@ -58,13 +67,15 @@ import pandas as pd
 import seaborn as sns
 import scipy
 import statsmodels
-import statsmodels.api as sm
 import statsmodels.formula.api as smf
+from scipy import stats
+from statsmodels.stats.multitest import multipletests
 from statsmodels.stats.proportion import (
     confint_proportions_2indep,
     power_proportions_2indep,
     proportion_confint,
     proportion_effectsize,
+    proportions_chisquare,
     proportions_ztest,
 )
 from statsmodels.stats.power import NormalIndPower
@@ -72,15 +83,27 @@ from statsmodels.stats.power import NormalIndPower
 try:
     from IPython.display import display
 except ImportError:  # plain-script fallback
+
     def display(obj):  # type: ignore[misc]
         print(obj)
 
-# Project paths (notebook lives in notebooks/)
+
+# Deterministic bootstrap
+RNG = np.random.default_rng(42)
+
 PROJECT_ROOT = Path.cwd()
 if PROJECT_ROOT.name == "notebooks":
     PROJECT_ROOT = PROJECT_ROOT.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Pre-declared decision constants (do not change after seeing results)
+ALPHA = 0.05
+EXPECTED_SPLIT = 0.5  # intended 50/50 randomization
+PRACTICAL_ABS_PP = 0.005  # ±0.5 pp absolute practical band around 0
+MDE_ABS_PP = 0.01  # business MDE for power: +1 pp absolute
+POWER_TARGET = 0.80
+SRM_ALPHA = 0.001  # industry often uses strict SRM threshold (very sensitive at large n)
 
 sns.set_theme(style="whitegrid", context="notebook")
 plt.rcParams["figure.figsize"] = (9, 5)
@@ -88,7 +111,7 @@ plt.rcParams["axes.titlesize"] = 13
 plt.rcParams["axes.labelsize"] = 11
 
 print("Kernel target name: ab-test-marketing-project")
-print(f"Python: {sys.version}")
+print(f"Python:      {sys.version}")
 print(f"pandas:      {pd.__version__}")
 print(f"numpy:       {np.__version__}")
 print(f"scipy:       {scipy.__version__}")
@@ -96,26 +119,20 @@ print(f"statsmodels: {statsmodels.__version__}")
 print(f"matplotlib:  {plt.matplotlib.__version__}")
 print(f"seaborn:     {sns.__version__}")
 print(f"Project root: {PROJECT_ROOT}")
+print()
+print("Pre-declared constants:")
+print(f"  ALPHA={ALPHA}, SRM_ALPHA={SRM_ALPHA}, EXPECTED_SPLIT={EXPECTED_SPLIT}")
+print(f"  PRACTICAL_ABS_PP={PRACTICAL_ABS_PP}, MDE_ABS_PP={MDE_ABS_PP}, POWER_TARGET={POWER_TARGET}")
 
 # %% [markdown]
 # ## 2. Data acquisition
 #
-# ### Source
+# Public Udacity DAND e-commerce A/B dataset (widely mirrored).
 #
-# Public Udacity Data Analyst Nanodegree A/B-test dataset (widely mirrored). We load two CSVs:
+# - `ab_data.csv`: `user_id`, `timestamp`, `group`, `landing_page`, `converted`
+# - `countries.csv`: `user_id`, `country` (`US` / `CA` / `UK`)
 #
-# 1. **`ab_data.csv`** — experiment log
-#    - `user_id`: user identifier
-#    - `timestamp`: when the user saw a page
-#    - `group`: randomized assignment (`control` / `treatment`)
-#    - `landing_page`: page actually recorded (`old_page` / `new_page`)
-#    - `converted`: 0/1 conversion flag
-#
-# 2. **`countries.csv`** — country of the user
-#    - `user_id`
-#    - `country`: `US`, `CA`, or `UK`
-#
-# Primary load path: raw GitHub URLs. If that fails, we clone the repo and read local files.
+# Primary path: GitHub raw URLs. Fallback: git clone.
 
 # %%
 AB_URL = (
@@ -127,16 +144,12 @@ COUNTRIES_URL = (
     "master/countries.csv"
 )
 REPO_URL = "https://github.com/jemc36/Udacity-DAND-AB-test-ecommerce"
-CLONE_DIR = PROJECT_ROOT / "data" / "Udacity-DAND-AB-test-ecommerce"
-
-load_path_used: str
+CLONE_DIR = DATA_DIR / "Udacity-DAND-AB-test-ecommerce"
 
 
 def _load_csv(url: str, cache_name: str) -> pd.DataFrame:
-    """Load CSV from URL, cache locally; raise on failure."""
-    cache_path = DATA_DIR / cache_name
     df = pd.read_csv(url)
-    df.to_csv(cache_path, index=False)
+    df.to_csv(DATA_DIR / cache_name, index=False)
     return df
 
 
@@ -148,10 +161,7 @@ except Exception as url_err:
     print(f"URL load failed ({type(url_err).__name__}: {url_err})")
     print("Falling back to git clone...")
     if not (CLONE_DIR / "ab_data.csv").exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", REPO_URL, str(CLONE_DIR)],
-            check=True,
-        )
+        subprocess.run(["git", "clone", "--depth", "1", REPO_URL, str(CLONE_DIR)], check=True)
     ab_data = pd.read_csv(CLONE_DIR / "ab_data.csv")
     countries = pd.read_csv(CLONE_DIR / "countries.csv")
     load_path_used = f"local clone at {CLONE_DIR}"
@@ -161,42 +171,37 @@ print(load_path_used)
 print()
 print("ab_data shape:", ab_data.shape)
 print("countries shape:", countries.shape)
-print()
-print("ab_data head:")
 display(ab_data.head())
-print("countries head:")
 display(countries.head())
+
+# Schema validation (production gate)
+required_ab = {"user_id", "timestamp", "group", "landing_page", "converted"}
+required_cty = {"user_id", "country"}
+missing_ab = required_ab - set(ab_data.columns)
+missing_cty = required_cty - set(countries.columns)
+assert not missing_ab, f"ab_data missing columns: {missing_ab}"
+assert not missing_cty, f"countries missing columns: {missing_cty}"
+assert set(ab_data["group"].dropna().unique()) <= {"control", "treatment"}
+assert set(ab_data["landing_page"].dropna().unique()) <= {"old_page", "new_page"}
+assert set(ab_data["converted"].dropna().unique()) <= {0, 1}
+print("Schema validation: PASS")
 print()
-print("ab_data dtypes / missing:")
-display(ab_data.dtypes.to_frame("dtype").join(ab_data.isna().sum().rename("n_missing")))
-print("countries dtypes / missing:")
-display(countries.dtypes.to_frame("dtype").join(countries.isna().sum().rename("n_missing")))
+print(ab_data.dtypes.to_frame("dtype").join(ab_data.isna().sum().rename("n_missing")))
 print()
-print("group value counts:")
-print(ab_data["group"].value_counts())
-print()
-print("landing_page value counts:")
-print(ab_data["landing_page"].value_counts())
-print()
-print("converted rate (raw, uncleaned):", ab_data["converted"].mean())
+print("Raw group counts:\n", ab_data["group"].value_counts())
+print("Raw landing_page counts:\n", ab_data["landing_page"].value_counts())
+print("Raw conversion rate:", f"{ab_data['converted'].mean():.6f}")
 
 # %% [markdown]
-# ## Part 1 — Data cleaning (the deliberate quality issue)
+# ## Part 1 — Data cleaning (exposure integrity)
 #
-# ### Why this section exists
+# Production systems refuse to estimate treatment effects on rows with **unknown exposure**.
 #
-# Real experiment logs are rarely analysis-ready. In this dataset, two issues appear by design and are the whole point of Part 1:
+# **Rules (fixed before estimation):**
+# 1. Keep only consistent rows: `(control, old_page)` or `(treatment, new_page)`.
+# 2. Keep one row per `user_id` (`keep='first'`).
 #
-# 1. **Assignment / page mismatches.** Some rows have `group == 'treatment'` but `landing_page == 'old_page'`, or `group == 'control'` but `landing_page == 'new_page'`. For those users we **cannot trust which campaign creative they actually saw**, so we cannot use them in a conversion comparison.
-# 2. **Duplicate `user_id`.** At least one user appears more than once. Treating duplicate rows as independent observations inflates sample size and can bias conversion rates.
-#
-# **Rule we will apply (standard for this dataset):**
-#
-# - Keep only consistent rows: `(control, old_page)` or `(treatment, new_page)`.
-# - Drop all mismatched rows.
-# - Then keep **one row per `user_id`** (`keep='first'` after sorting is not required here; we use pandas default `keep='first'` on the post-mismatch frame).
-#
-# Skipping straight to the z-test on raw rows would be a textbook example of **garbage-in, garbage-out** analysis. Cleaning is not a footnote — it is the first analysis step.
+# This dataset’s intentional quality issue makes cleaning a first-class section, not a footnote.
 
 # %%
 n_before = len(ab_data)
@@ -208,134 +213,121 @@ consistent = (
 )
 mismatched = ab_data.loc[~consistent].copy()
 n_mismatch = len(mismatched)
-
-print(f"Mismatched rows (group vs landing_page inconsistent): {n_mismatch:,}")
-print(f"Mismatch share of raw data: {n_mismatch / n_before:.2%}")
-print()
-print("Mismatch breakdown by (group, landing_page):")
-mismatch_counts = (
+print(f"Mismatched rows: {n_mismatch:,} ({n_mismatch / n_before:.2%} of raw)")
+display(
     mismatched.groupby(["group", "landing_page"], observed=True)
     .size()
     .rename("n")
     .reset_index()
 )
-display(mismatch_counts)
-print("Sample of mismatched rows:")
-display(mismatched.head(10))
+display(mismatched.head(8))
 
 ab_clean = ab_data.loc[consistent].copy()
 n_after_mismatch = len(ab_clean)
-print(f"Rows after dropping mismatches: {n_after_mismatch:,}  (removed {n_before - n_after_mismatch:,})")
+print(f"Rows after mismatch drop: {n_after_mismatch:,}")
 
-# %%
-# Duplicate user_id handling
 dup_mask = ab_clean["user_id"].duplicated(keep=False)
-n_dup_rows = int(dup_mask.sum())
-n_dup_users = ab_clean.loc[dup_mask, "user_id"].nunique()
-
-print(f"Rows involved in duplicate user_id: {n_dup_rows:,}")
-print(f"Distinct user_ids that appear more than once: {n_dup_users:,}")
-print()
-print("Duplicate user row(s):")
+print(f"Rows in duplicate user_id groups: {int(dup_mask.sum()):,}")
+print(f"Distinct duplicated user_ids: {ab_clean.loc[dup_mask, 'user_id'].nunique():,}")
 display(ab_clean.loc[dup_mask].sort_values("user_id"))
 
 ab_clean = ab_clean.drop_duplicates(subset="user_id", keep="first").copy()
 n_after_dedup = len(ab_clean)
+assert ab_clean["user_id"].is_unique
 
-print()
-print(f"Rows after de-duplication (keep='first'): {n_after_dedup:,}")
-print(f"Removed by de-duplication: {n_after_mismatch - n_after_dedup:,}")
-assert ab_clean["user_id"].is_unique, "user_id is not unique after de-duplication"
-
-# Final cleaning summary
 cleaning_summary = pd.DataFrame(
     {
-        "stage": [
-            "raw rows",
-            "after drop mismatches",
-            "after drop duplicate user_id",
-        ],
+        "stage": ["raw", "after_mismatch_drop", "after_dedup"],
         "n_rows": [n_before, n_after_mismatch, n_after_dedup],
     }
 )
-cleaning_summary["delta_from_previous"] = cleaning_summary["n_rows"].diff().fillna(0).astype(int)
+cleaning_summary["delta"] = cleaning_summary["n_rows"].diff().fillna(0).astype(int)
 display(cleaning_summary)
-
-print()
-print("Final group sizes:")
-print(ab_clean["group"].value_counts().sort_index())
-print()
-print("Sanity: group × landing_page (should be diagonal only):")
 display(pd.crosstab(ab_clean["group"], ab_clean["landing_page"]))
+print("Final arm sizes:\n", ab_clean["group"].value_counts().sort_index())
 
 # %% [markdown]
-# ### Cleaning takeaway
+# ## Part 1b — Trustworthiness gate: Sample Ratio Mismatch (SRM)
 #
-# We removed thousands of rows where the recorded **assignment** and **page shown** disagreed, plus duplicate user rows. Only after this is the comparison “control/old creative vs treatment/new creative” trustworthy.
+# **Why this matters (industry standard):** Microsoft ExP, DoorDash, Eppo, and others treat **SRM** as a hard trustworthiness check. If the observed control/treatment counts deviate from the intended allocation more than chance allows, **randomization or logging is compromised** and effect estimates should not be trusted until diagnosed.
 #
-# Downstream analysis uses `ab_clean` only.
-
-# %% [markdown]
-# ## Part 2 — Exploratory data analysis (cleaned data)
+# Detection: χ² goodness-of-fit of observed arm counts against expected 50/50.
 #
-# Before formal testing, we want a picture of:
-#
-# 1. Overall and by-group conversion rates
-# 2. Sample sizes (are arms balanced?)
-# 3. Uncertainty around each rate (confidence intervals on the bars)
-# 4. **Time trends** — a real risk in marketing tests is a *novelty effect* (users react to “new” briefly) or drift during the experiment window
-# 5. **Country** differences after merging `countries.csv`
+# At very large \(n\), even tiny imbalances are “significant.” We report the p-value **and** the absolute imbalance. A severe SRM (tiny p + large imbalance) is a red flag; a tiny imbalance with large \(n\) can still be operationally fine.
 
 # %%
-# Core rates
+n_control = int((ab_clean["group"] == "control").sum())
+n_treatment = int((ab_clean["group"] == "treatment").sum())
+n_total = n_control + n_treatment
+obs = np.array([n_control, n_treatment], dtype=float)
+exp = np.array([EXPECTED_SPLIT * n_total, (1 - EXPECTED_SPLIT) * n_total], dtype=float)
+srm_chi2, srm_p = stats.chisquare(f_obs=obs, f_exp=exp)
+obs_share_treat = n_treatment / n_total
+abs_imbalance_pp = abs(obs_share_treat - EXPECTED_SPLIT) * 100
+
+srm_pass = srm_p >= SRM_ALPHA  # strict threshold; still inspect magnitude
+# Production nuance: also require absolute imbalance not extreme
+srm_severe = (srm_p < SRM_ALPHA) and (abs_imbalance_pp > 0.5)
+
+print("=== Sample Ratio Mismatch (SRM) ===")
+print(f"Observed: control={n_control:,}, treatment={n_treatment:,}, total={n_total:,}")
+print(f"Expected split: {EXPECTED_SPLIT:.0%} / {1 - EXPECTED_SPLIT:.0%}")
+print(f"Observed treatment share: {obs_share_treat:.6%}")
+print(f"Absolute imbalance: {abs_imbalance_pp:.4f} percentage points of traffic")
+print(f"χ² = {srm_chi2:.6f}, p = {srm_p:.6g}")
+print(f"SRM gate (p >= {SRM_ALPHA}): {'PASS' if srm_pass else 'FLAG'}")
+print(f"Severe SRM (flag + >0.5pp imbalance): {srm_severe}")
+if abs_imbalance_pp < 0.1:
+    print("Magnitude: imbalance is tiny — large-n χ² can flag noise; effect analysis remains usable.")
+elif srm_severe:
+    print("Magnitude: SEVERE — diagnose instrumentation before shipping on this test.")
+else:
+    print("Magnitude: mild/moderate — document and proceed with caution.")
+
+# %% [markdown]
+# ## Part 2 — EDA on cleaned data
+#
+# Primary **OEC** (Overall Evaluation Criterion) for this experiment: **conversion rate**.
+# Wilson score intervals are preferred over plain normal intervals for proportions in production dashboards.
+
+# %%
 overall_rate = ab_clean["converted"].mean()
 by_group = (
     ab_clean.groupby("group", observed=True)
     .agg(n=("converted", "size"), conversions=("converted", "sum"), rate=("converted", "mean"))
     .reset_index()
 )
-by_page = (
-    ab_clean.groupby("landing_page", observed=True)
-    .agg(n=("converted", "size"), conversions=("converted", "sum"), rate=("converted", "mean"))
-    .reset_index()
-)
+display(by_group.assign(rate_pct=lambda d: (100 * d["rate"]).round(4)))
 
-print(f"Overall conversion rate (cleaned): {overall_rate:.4%}  (n={len(ab_clean):,})")
-print()
-print("By group:")
-display(by_group.assign(rate_pct=lambda d: (d["rate"] * 100).round(4)))
-print("By landing page (should match group after cleaning):")
-display(by_page.assign(rate_pct=lambda d: (d["rate"] * 100).round(4)))
-
-# Store control / treatment rates for later sections
-ctrl_row = by_group.loc[by_group["group"] == "control"].iloc[0]
-trt_row = by_group.loc[by_group["group"] == "treatment"].iloc[0]
-p_control = float(ctrl_row["rate"])
-p_treatment = float(trt_row["rate"])
-n_control = int(ctrl_row["n"])
-n_treatment = int(trt_row["n"])
-conv_control = int(ctrl_row["conversions"])
-conv_treatment = int(trt_row["conversions"])
+ctrl = by_group.loc[by_group["group"] == "control"].iloc[0]
+trt = by_group.loc[by_group["group"] == "treatment"].iloc[0]
+p_control = float(ctrl["rate"])
+p_treatment = float(trt["rate"])
+conv_control = int(ctrl["conversions"])
+conv_treatment = int(trt["conversions"])
+# reaffirm n from by_group (should match SRM counts)
+n_control = int(ctrl["n"])
+n_treatment = int(trt["n"])
 abs_diff = p_treatment - p_control
 rel_diff = abs_diff / p_control if p_control else np.nan
 
-print()
-print(f"Control (old creative):    p={p_control:.6f}, n={n_control:,}, conversions={conv_control:,}")
-print(f"Treatment (new creative):  p={p_treatment:.6f}, n={n_treatment:,}, conversions={conv_treatment:,}")
-print(f"Absolute difference (new − old): {abs_diff:.6f}  ({abs_diff * 100:.4f} percentage points)")
-print(f"Relative difference vs control:  {rel_diff:.4%}")
+print(f"Overall conversion: {overall_rate:.4%} (n={len(ab_clean):,})")
+print(f"Control:   p={p_control:.6f}, n={n_control:,}, conv={conv_control:,}")
+print(f"Treatment: p={p_treatment:.6f}, n={n_treatment:,}, conv={conv_treatment:,}")
+print(f"Diff (new−old): {abs_diff:.6f} ({abs_diff * 100:.4f} pp), relative {rel_diff:.4%}")
 
-# %%
-# Bar chart with 95% CI error bars (normal approx via statsmodels proportion_confint)
-ci_low_c, ci_high_c = proportion_confint(conv_control, n_control, alpha=0.05, method="normal")
-ci_low_t, ci_high_t = proportion_confint(conv_treatment, n_treatment, alpha=0.05, method="normal")
+# Wilson CIs for each arm
+ci_c = proportion_confint(conv_control, n_control, alpha=ALPHA, method="wilson")
+ci_t = proportion_confint(conv_treatment, n_treatment, alpha=ALPHA, method="wilson")
+print(f"Wilson 95% CI control:   [{ci_c[0]:.6f}, {ci_c[1]:.6f}]")
+print(f"Wilson 95% CI treatment: [{ci_t[0]:.6f}, {ci_t[1]:.6f}]")
 
 plot_df = pd.DataFrame(
     {
         "creative": ["Old page\n(control)", "New page\n(treatment)"],
         "rate": [p_control, p_treatment],
-        "ci_low": [ci_low_c, ci_low_t],
-        "ci_high": [ci_high_c, ci_high_t],
+        "ci_low": [ci_c[0], ci_t[0]],
+        "ci_high": [ci_c[1], ci_t[1]],
     }
 )
 plot_df["yerr_low"] = plot_df["rate"] - plot_df["ci_low"]
@@ -351,30 +343,23 @@ bars = ax.bar(
     edgecolor="black",
     linewidth=0.6,
 )
+ax.axhline(overall_rate, color="gray", ls="--", lw=1, label=f"Overall {overall_rate:.2%}")
 ax.set_ylabel("Conversion rate")
-ax.set_title("Marketing campaign landing page: conversion rate by creative (95% CI)")
+ax.set_title("Campaign creative conversion (Wilson 95% CI)")
 ax.set_ylim(0, max(plot_df["ci_high"]) * 1.25)
+ax.legend(loc="upper right")
 for bar, rate in zip(bars, plot_df["rate"]):
-    ax.text(
-        bar.get_x() + bar.get_width() / 2,
-        bar.get_height() + 0.002,
-        f"{rate:.2%}",
-        ha="center",
-        va="bottom",
-        fontsize=11,
-    )
+    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.0015, f"{rate:.2%}", ha="center")
 plt.tight_layout()
 plt.show()
 
-print("95% CI control:   [{:.6f}, {:.6f}]".format(ci_low_c, ci_high_c))
-print("95% CI treatment: [{:.6f}, {:.6f}]".format(ci_low_t, ci_high_t))
-
 # %% [markdown]
-# ### Conversion over time (novelty / drift check)
+# ### Time trend (novelty / drift check)
 #
-# If the new creative only “wins” on day 1 and then fades, shipping on an early snapshot would be wrong. Conversely, a stable gap (or stable near-zero gap) over many days is more trustworthy. This dataset spans multiple days, so we plot **daily conversion rate by group**.
+# Production risk: novelty effects or non-stationarity. Plot daily conversion by arm.
 
 # %%
+ab_clean = ab_clean.copy()
 ab_clean["timestamp"] = pd.to_datetime(ab_clean["timestamp"])
 ab_clean["date"] = ab_clean["timestamp"].dt.date
 
@@ -384,505 +369,509 @@ daily = (
     .reset_index()
 )
 
-fig, ax = plt.subplots(figsize=(11, 5))
+fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
 for group, color, label in [
     ("control", "#4C72B0", "Old page (control)"),
     ("treatment", "#DD8452", "New page (treatment)"),
 ]:
     g = daily.loc[daily["group"] == group].sort_values("date")
-    ax.plot(g["date"], g["rate"], marker="o", markersize=4, color=color, label=label)
-
-ax.set_title("Daily conversion rate by campaign creative")
-ax.set_xlabel("Date")
-ax.set_ylabel("Conversion rate")
-ax.legend()
-ax.tick_params(axis="x", rotation=45)
+    axes[0].plot(g["date"], g["rate"], marker="o", ms=3.5, color=color, label=label)
+    axes[1].plot(g["date"], g["n"], marker="o", ms=3.5, color=color, label=label)
+axes[0].set_ylabel("Conversion rate")
+axes[0].set_title("Daily conversion by campaign creative")
+axes[0].legend()
+axes[1].set_ylabel("Sample size (users/day)")
+axes[1].set_title("Daily traffic by arm (assignment volume)")
+axes[1].legend()
+axes[1].tick_params(axis="x", rotation=45)
 plt.tight_layout()
 plt.show()
 
-print("Experiment date range:", ab_clean["timestamp"].min(), "→", ab_clean["timestamp"].max())
-print("Number of distinct days:", ab_clean["date"].nunique())
-print()
-print("Daily n by group (first/last 3 days):")
-daily_n = (
-    ab_clean.groupby(["date", "group"], observed=True).size().unstack("group").sort_index()
-)
-display(pd.concat([daily_n.head(3), daily_n.tail(3)]))
+print("Date range:", ab_clean["timestamp"].min(), "→", ab_clean["timestamp"].max())
+print("Distinct days:", ab_clean["date"].nunique())
 
 # %% [markdown]
-# ### Country breakdown
+# ### Country merge and segment rates
 #
-# We merge country and check whether conversion differs by market. Later, logistic regression will ask whether the page effect survives after adjusting for country.
+# Segments are diagnostic. Segment-level tests later use multiplicity control.
 
 # %%
 n_before_merge = len(ab_clean)
 df = ab_clean.merge(countries, on="user_id", how="inner")
 n_after_merge = len(df)
-print(f"Rows before country merge: {n_before_merge:,}")
-print(f"Rows after inner merge with countries: {n_after_merge:,}")
-print(f"Rows lost in merge: {n_before_merge - n_after_merge:,}")
+print(f"Merge loss: {n_before_merge - n_after_merge:,} rows")
+df["ab_page"] = (df["group"] == "treatment").astype(int)
 
 by_country = (
     df.groupby("country", observed=True)
     .agg(n=("converted", "size"), rate=("converted", "mean"))
     .reset_index()
-    .sort_values("country")
 )
 by_country_group = (
     df.groupby(["country", "group"], observed=True)
     .agg(n=("converted", "size"), rate=("converted", "mean"))
     .reset_index()
 )
-
-print()
-print("Conversion by country (pooled arms):")
-display(by_country.assign(rate_pct=lambda d: (d["rate"] * 100).round(4)))
-print("Conversion by country × group:")
-display(by_country_group.assign(rate_pct=lambda d: (d["rate"] * 100).round(4)))
+display(by_country.assign(rate_pct=lambda d: (100 * d["rate"]).round(4)))
+display(by_country_group.assign(rate_pct=lambda d: (100 * d["rate"]).round(4)))
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 sns.barplot(data=by_country, x="country", y="rate", ax=axes[0], color="#55A868")
-axes[0].set_title("Conversion rate by country")
-axes[0].set_ylabel("Conversion rate")
-axes[0].set_xlabel("Country")
-
+axes[0].set_title("Conversion by country")
 sns.barplot(data=by_country_group, x="country", y="rate", hue="group", ax=axes[1])
-axes[1].set_title("Conversion rate by country and campaign creative")
-axes[1].set_ylabel("Conversion rate")
-axes[1].set_xlabel("Country")
-axes[1].legend(title="Group")
+axes[1].set_title("Conversion by country × creative")
 plt.tight_layout()
 plt.show()
 
-# Dummy for regression later: 1 = new page / treatment
-df["ab_page"] = (df["group"] == "treatment").astype(int)
-print("ab_page value counts (1 = new campaign creative):")
-print(df["ab_page"].value_counts().sort_index())
-
 # %% [markdown]
-# ### EDA interpretation (using the numbers above)
+# ## Part 3 — Primary hypothesis test (two-proportion z-test)
 #
-# Look at the printed rates: both creatives convert near the same overall level (~12%). The **new** campaign landing page is typically *slightly lower*, not higher — but we must not ship/kill on a raw difference alone. Sampling noise can create small gaps even when the true lift is zero.
+# **Plain language**
+# - \(H_0\): new and old campaign creatives convert equally.
+# - \(H_1\): they differ (two-sided).
 #
-# Daily curves should sit on top of each other if there is no real effect (and no strong novelty pattern). Country bars show whether baseline conversion differs by market; large country main effects would motivate adjusting for country in Part 4 even if the page effect is stable.
-
-# %% [markdown]
-# ## Part 3 — Hypothesis test (two-proportion z-test)
+# **Why two-sided?** Production default when direction was not hard-locked as a one-sided product claim before launch. Prevents post-hoc one-sided p-hacking.
 #
-# ### In plain language
-#
-# - **Null hypothesis (H0):** The new campaign landing page converts the same as the old one. Shipping the new creative would not change conversion.
-# - **Alternative (H1):** The two creatives convert at *different* rates (two-sided).
-#
-# Why two-sided? Marketing often *hopes* the new page is better, but a honest test also allows “new page is worse.” One-sided tests that only look for improvement are easier to abuse after seeing the data. We use **α = 0.05** and will not move that threshold after seeing the p-value.
-#
-# ### Formally
-#
-# Let \(p_{\text{new}}\) be the true conversion probability for the new creative (treatment) and \(p_{\text{old}}\) for the old creative (control).
-#
-# \[
-# H_0: p_{\text{new}} - p_{\text{old}} = 0
-# \qquad
-# H_1: p_{\text{new}} - p_{\text{old}} \neq 0
-# \]
-#
-# With large \(n\) and conversion rates not near 0 or 1, the difference in sample proportions is approximately normal → **two-proportion z-test**.
+# Formally: \(H_0: p_{\text{new}} - p_{\text{old}} = 0\).
 
 # %%
-# count / nobs order: [treatment, control] so z > 0 means new page higher conversion
 count = np.array([conv_treatment, conv_control], dtype=float)
 nobs = np.array([n_treatment, n_control], dtype=float)
 
 zstat, pval = proportions_ztest(count, nobs, alternative="two-sided")
-
-# 95% CI for (p_treatment - p_control)
 ci_low, ci_high = confint_proportions_2indep(
     count1=conv_treatment,
     nobs1=n_treatment,
     count2=conv_control,
     nobs2=n_control,
     compare="diff",
-    alpha=0.05,
+    alpha=ALPHA,
 )
 
-print("=== Two-proportion z-test (treatment vs control) ===")
-print(f"Treatment: {conv_treatment:,} / {n_treatment:,}  →  p_new = {p_treatment:.6f}")
-print(f"Control:   {conv_control:,} / {n_control:,}  →  p_old = {p_control:.6f}")
-print(f"Difference (p_new − p_old): {abs_diff:.6f}")
-print()
-print(f"z-statistic: {zstat:.6f}")
-print(f"p-value (two-sided): {pval:.6f}")
+# χ² cross-check (equivalent in large samples for 2x2)
+chi2stat, chi2_p, chi2_table = proportions_chisquare(count, nobs)
+
+print("=== Primary: two-proportion z-test ===")
+print(f"p_new={p_treatment:.6f}, p_old={p_control:.6f}, diff={abs_diff:.6f}")
+print(f"z={zstat:.6f}, p={pval:.6f}")
 print(f"95% CI for (p_new − p_old): [{ci_low:.6f}, {ci_high:.6f}]")
 print()
+print("=== Cross-check: proportions χ² ===")
+print(f"χ²={chi2stat:.6f}, p={chi2_p:.6f}")
+print("Table (successes, failures) by [treatment, control]:")
+print(chi2_table)
 
-alpha = 0.05
-if pval < alpha:
-    decision = "REJECT H0"
-    plain = (
-        "The difference in conversion between the new and old campaign creatives "
-        "is statistically significant at α=0.05."
-    )
-else:
-    decision = "FAIL TO REJECT H0"
-    plain = (
-        "We do **not** have statistically significant evidence at α=0.05 that the "
-        "new campaign landing page converts differently from the old one."
-    )
-
-print(f"Decision at α={alpha}: {decision}")
-print(plain)
+significant = pval < ALPHA
+decision_h0 = "REJECT H0" if significant else "FAIL TO REJECT H0"
 print()
+print(f"Decision at α={ALPHA}: {decision_h0}")
 if ci_low <= 0 <= ci_high:
-    print("The 95% CI for the difference includes 0 — consistent with no real lift (or a tiny one).")
+    print("CI includes 0 → compatible with no true lift (or a very small one).")
 else:
-    print("The 95% CI for the difference excludes 0 — consistent with a nonzero difference.")
+    print("CI excludes 0 → nonzero difference supported at this confidence level.")
+
+# Practical significance band
+in_practical_null = abs(abs_diff) < PRACTICAL_ABS_PP
+ci_inside_practical = (ci_low > -PRACTICAL_ABS_PP) and (ci_high < PRACTICAL_ABS_PP)
+print()
+print(f"Practical band: ±{PRACTICAL_ABS_PP * 100:.2f} pp absolute")
+print(f"Point estimate inside practical null band: {in_practical_null}")
+print(f"Entire 95% CI inside practical null band: {ci_inside_practical}")
 
 # %% [markdown]
-# ### Interpreting the hypothesis test
+# ### Robustness: nonparametric bootstrap CI for the difference
 #
-# Read the printed **z**, **p-value**, and **CI** carefully:
-#
-# - If **p ≥ 0.05**, we do not claim the new creative “won” or “lost” in a statistical sense — the data are compatible with no difference (or a difference too small to pin down at this α).
-# - The **confidence interval** is often more useful to a marketer than a binary p-value: it shows a plausible range for the true lift (new − old). If that range is centered near zero and only a few tenths of a percentage point wide, the experiment was informative: it *ruled out large lifts*, even if it did not prove a tiny negative effect.
-# - We will **not** re-run a one-sided test or drop more data to chase significance.
+# Resample users within arms to get a percentile CI for \(p_{\text{new}} - p_{\text{old}}\). Should agree closely with the analytic CI at this sample size.
+
+# %%
+y_c = ab_clean.loc[ab_clean["group"] == "control", "converted"].to_numpy()
+y_t = ab_clean.loc[ab_clean["group"] == "treatment", "converted"].to_numpy()
+
+n_boot = 2000
+boot_diffs = np.empty(n_boot)
+for i in range(n_boot):
+    bc = RNG.choice(y_c, size=y_c.size, replace=True)
+    bt = RNG.choice(y_t, size=y_t.size, replace=True)
+    boot_diffs[i] = bt.mean() - bc.mean()
+
+boot_ci = np.quantile(boot_diffs, [ALPHA / 2, 1 - ALPHA / 2])
+print(f"Bootstrap mean diff: {boot_diffs.mean():.6f}")
+print(f"Bootstrap 95% percentile CI: [{boot_ci[0]:.6f}, {boot_ci[1]:.6f}]")
+print(f"Analytic 95% CI:            [{ci_low:.6f}, {ci_high:.6f}]")
+
+fig, ax = plt.subplots()
+ax.hist(boot_diffs, bins=40, color="#8172B3", edgecolor="white", alpha=0.9)
+ax.axvline(0, color="black", ls="--", lw=1, label="0 (null)")
+ax.axvline(abs_diff, color="#DD8452", lw=2, label=f"Observed {abs_diff:.4f}")
+ax.axvline(boot_ci[0], color="#4C72B0", ls=":", label="Bootstrap CI")
+ax.axvline(boot_ci[1], color="#4C72B0", ls=":")
+ax.set_xlabel("p_new − p_old")
+ax.set_title(f"Bootstrap distribution of lift ({n_boot} resamples)")
+ax.legend()
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
 # ## Part 4 — Logistic regression (effect size + country adjustment)
 #
-# ### Why logistic regression here?
-#
-# The z-test answers “is the difference distinguishable from zero?” Logistic regression answers a related but usefully different set of questions:
-#
-# 1. What is the **odds ratio** for converting on the new creative vs the old one?
-# 2. Does that page effect **change after adjusting for country**?
-# 3. (Optional) Does the page effect **interact** with country?
-#
-# This is **not** a predictive model. We do not report accuracy, ROC-AUC, or train/test splits. We report coefficients and **odds ratios** because ORs are easier to reason about than raw log-odds.
-#
-# - `ab_page = 1` → new campaign landing page (treatment)
-# - `ab_page = 0` → old campaign landing page (control)
-#
-# An odds ratio of 1.00 means identical odds of conversion. OR = 0.99 means ~1% lower odds on the new page, etc.
+# Report **odds ratios**, not accuracy. Models:
+# 1. `converted ~ ab_page`
+# 2. `converted ~ ab_page + C(country)`
+# 3. `converted ~ ab_page * C(country)` (heterogeneity check)
 
 # %%
 def odds_ratio_table(result) -> pd.DataFrame:
-    """Build OR + 95% CI + p-value table from a statsmodels discrete result."""
-    params = result.params
     conf = result.conf_int()
-    conf.columns = ["ci_low_log", "ci_high_log"]
-    out = pd.DataFrame(
+    conf.columns = ["lo", "hi"]
+    return pd.DataFrame(
         {
-            "coef_log_odds": params,
-            "OR": np.exp(params),
-            "OR_ci_low": np.exp(conf["ci_low_log"]),
-            "OR_ci_high": np.exp(conf["ci_high_log"]),
+            "coef": result.params,
+            "OR": np.exp(result.params),
+            "OR_ci_low": np.exp(conf["lo"]),
+            "OR_ci_high": np.exp(conf["hi"]),
             "pvalue": result.pvalues,
         }
     )
-    return out
 
 
-# Model 1: page only
 m1 = smf.logit("converted ~ ab_page", data=df).fit(disp=False)
-print("=== Model 1: converted ~ ab_page ===")
-print(m1.summary())
-print()
-print("Odds ratios (Model 1):")
-or1 = odds_ratio_table(m1)
-display(or1)
-
-# %%
-# Model 2: page + country
 m2 = smf.logit("converted ~ ab_page + C(country)", data=df).fit(disp=False)
-print("=== Model 2: converted ~ ab_page + C(country) ===")
-print(m2.summary())
-print()
-print("Odds ratios (Model 2):")
-or2 = odds_ratio_table(m2)
-display(or2)
-
-# %%
-# Model 3: interaction — teaching check; primary adjusted estimate remains Model 2 if interaction is weak
 m3 = smf.logit("converted ~ ab_page * C(country)", data=df).fit(disp=False)
-print("=== Model 3: converted ~ ab_page * C(country) ===")
-print(m3.summary())
-print()
-print("Odds ratios (Model 3):")
-or3 = odds_ratio_table(m3)
-display(or3)
 
-# Highlight ab_page across models
-ab_page_compare = pd.DataFrame(
-    {
-        "model": ["ab_page only", "ab_page + country", "ab_page × country (main effect of ab_page)"],
-        "OR_ab_page": [
-            float(or1.loc["ab_page", "OR"]),
-            float(or2.loc["ab_page", "OR"]),
-            float(or3.loc["ab_page", "OR"]),
-        ],
-        "pvalue_ab_page": [
-            float(or1.loc["ab_page", "pvalue"]),
-            float(or2.loc["ab_page", "pvalue"]),
-            float(or3.loc["ab_page", "pvalue"]),
-        ],
-    }
-)
-print("ab_page odds ratio across models:")
-display(ab_page_compare)
+or1, or2, or3 = odds_ratio_table(m1), odds_ratio_table(m2), odds_ratio_table(m3)
+print("=== Model 1: converted ~ ab_page ===")
+display(or1)
+print(m1.summary().tables[1])
+print()
+print("=== Model 2: converted ~ ab_page + C(country) ===")
+display(or2)
+print(m2.summary().tables[1])
+print()
+print("=== Model 3: interaction ===")
+display(or3)
 
 or_ab_m1 = float(or1.loc["ab_page", "OR"])
 or_ab_m2 = float(or2.loc["ab_page", "OR"])
 pval_ab_m2 = float(or2.loc["ab_page", "pvalue"])
-
-# Interaction term p-values (any term containing ':')
 interaction_terms = [t for t in or3.index if ":" in t]
-if interaction_terms:
-    print()
-    print("Interaction term p-values:")
-    display(or3.loc[interaction_terms, ["OR", "OR_ci_low", "OR_ci_high", "pvalue"]])
-    max_inter_p = float(or3.loc[interaction_terms, "pvalue"].min())
-    print(
-        f"Smallest interaction p-value: {max_inter_p:.4f} "
-        f"({'suggests possible heterogeneity' if max_inter_p < 0.05 else 'no strong evidence of country×page interaction at α=0.05'})"
+min_inter_p = float(or3.loc[interaction_terms, "pvalue"].min()) if interaction_terms else np.nan
+print()
+print("ab_page OR comparison:")
+display(
+    pd.DataFrame(
+        {
+            "model": ["unadjusted", "country-adjusted", "interaction main ab_page"],
+            "OR": [or_ab_m1, or_ab_m2, float(or3.loc["ab_page", "OR"])],
+            "pvalue": [
+                float(or1.loc["ab_page", "pvalue"]),
+                pval_ab_m2,
+                float(or3.loc["ab_page", "pvalue"]),
+            ],
+        }
     )
+)
+print(f"Min interaction p-value: {min_inter_p:.4f}")
 
 # %% [markdown]
-# ### Logistic regression interpretation
+# ### Segment tests with multiplicity control
 #
-# Focus on the **`ab_page` odds ratio**:
-#
-# - Values **near 1.0** with a confidence interval covering 1.0 mean the new creative does not meaningfully change conversion odds.
-# - Adjusting for country (Model 2) checks whether market mix was confounding the raw comparison. If the OR barely moves after adding country, the page effect is **not** an artifact of country imbalance.
-# - Interaction terms (Model 3) ask whether the page effect differs by country. If those terms are non-significant, Model 2 is the cleaner summary for a manager: one average page effect, holding country fixed.
-#
-# Again: no accuracy metrics. Odds ratios and p-values are the right summaries for this design.
-
-# %% [markdown]
-# ## Part 5 — Statistical power and sample-size sanity check
-#
-# A non-significant result can mean either:
-#
-# 1. The true effect is tiny / zero, **or**
-# 2. The experiment was underpowered (too few users) to detect a real effect.
-#
-# With ~145k users per arm, (2) is unlikely for modest lifts — but we should **compute** it, not assume.
-#
-# We answer two numerical questions:
-#
-# 1. Given the **observed** difference, how large a sample would we need for 80% power at α=0.05?
-# 2. For a **business-relevant minimum detectable effect (MDE)** of +1 percentage point absolute on the control baseline, what \(n\) per arm is needed — and what power did we actually have for that MDE?
-#
-# If observed effect is tiny and \(n\) is already huge, **extending the experiment** is usually the wrong response. You already know the lift is not large.
+# Per-country two-proportion tests + Benjamini–Hochberg FDR (production-safe for exploratory segments).
 
 # %%
-# Observed effect size (Cohen's h) and required n for that effect
+segment_rows = []
+for country, g in df.groupby("country", observed=True):
+    yc = g.loc[g["group"] == "control", "converted"]
+    yt = g.loc[g["group"] == "treatment", "converted"]
+    c = np.array([yt.sum(), yc.sum()], dtype=float)
+    n = np.array([yt.shape[0], yc.shape[0]], dtype=float)
+    z_s, p_s = proportions_ztest(c, n, alternative="two-sided")
+    segment_rows.append(
+        {
+            "country": country,
+            "n_control": int(n[1]),
+            "n_treatment": int(n[0]),
+            "p_control": float(yc.mean()),
+            "p_treatment": float(yt.mean()),
+            "diff": float(yt.mean() - yc.mean()),
+            "z": float(z_s),
+            "pvalue_raw": float(p_s),
+        }
+    )
+seg = pd.DataFrame(segment_rows).sort_values("country")
+rej, p_adj, _, _ = multipletests(seg["pvalue_raw"], alpha=ALPHA, method="fdr_bh")
+seg["pvalue_fdr_bh"] = p_adj
+seg["sig_fdr_bh"] = rej
+display(seg)
+
+# %% [markdown]
+# ## Part 5 — Power, MDE, and power curve
+#
+# Answer “should we extend?” with numbers:
+# - Power for the **observed** effect (usually low if effect is tiny)
+# - Power for a business **MDE** of +1 pp absolute
+# - Required n/arm for 80% power at that MDE
+# - Power curve vs sample size
+
+# %%
 es_obs = proportion_effectsize(p_treatment, p_control)
-# solve_power needs nonzero effect; if difference is exactly 0, note separately
 if abs(es_obs) < 1e-12:
     n_for_obs = np.inf
-    print("Observed effect size is ~0; infinite n would be needed to 'detect' a zero effect.")
 else:
     n_for_obs = NormalIndPower().solve_power(
         effect_size=abs(es_obs),
-        alpha=0.05,
-        power=0.8,
+        alpha=ALPHA,
+        power=POWER_TARGET,
         ratio=1.0,
         alternative="two-sided",
     )
 
-# Power of the actual experiment for the observed difference
 pwr_obs = power_proportions_2indep(
     diff=p_treatment - p_control,
     prop2=p_control,
     nobs1=n_treatment,
     ratio=n_control / n_treatment,
-    alpha=0.05,
+    alpha=ALPHA,
     alternative="two-sided",
     return_results=True,
 )
 
-# Business MDE: +1 percentage point absolute improvement over control
-mde_pp = 0.01
-p_mde = p_control + mde_pp
+p_mde = p_control + MDE_ABS_PP
 es_mde = proportion_effectsize(p_mde, p_control)
 n_for_mde = NormalIndPower().solve_power(
     effect_size=es_mde,
-    alpha=0.05,
-    power=0.8,
+    alpha=ALPHA,
+    power=POWER_TARGET,
     ratio=1.0,
     alternative="two-sided",
 )
 pwr_mde = power_proportions_2indep(
-    diff=mde_pp,
+    diff=MDE_ABS_PP,
     prop2=p_control,
     nobs1=n_treatment,
     ratio=n_control / n_treatment,
-    alpha=0.05,
+    alpha=ALPHA,
     alternative="two-sided",
     return_results=True,
 )
-
 actual_n_per_arm = min(n_control, n_treatment)
+underpowered_for_mde = pwr_mde.power < POWER_TARGET
 
-print("=== Observed effect ===")
-print(f"p_new − p_old = {abs_diff:.6f}  ({abs_diff * 100:.4f} pp)")
-print(f"Cohen's h (proportion_effectsize): {es_obs:.6f}")
-print(f"n per arm needed for 80% power to detect the *observed* effect: {n_for_obs:,.0f}")
-print(f"Actual n (control / treatment): {n_control:,} / {n_treatment:,}")
-print(f"Achieved power for the observed difference at actual n: {pwr_obs.power:.4f}")
+print("=== Observed effect power ===")
+print(f"Cohen h={es_obs:.6f}")
+print(f"n/arm for {POWER_TARGET:.0%} power @ observed effect: {n_for_obs:,.0f}")
+print(f"Achieved power @ observed effect: {pwr_obs.power:.4f}")
 print()
-print("=== Business MDE: +1.00 percentage point absolute ===")
-print(f"Target rates: p_old={p_control:.6f}, p_new_target={p_mde:.6f}")
-print(f"Cohen's h for MDE: {es_mde:.6f}")
-print(f"n per arm needed for 80% power at this MDE: {n_for_mde:,.0f}")
-print(f"Actual min arm size: {actual_n_per_arm:,}")
-print(f"Achieved power for +1 pp MDE at actual n: {pwr_mde.power:.4f}")
-print()
+print(f"=== MDE = +{MDE_ABS_PP * 100:.2f} pp absolute ===")
+print(f"n/arm for {POWER_TARGET:.0%} power @ MDE: {n_for_mde:,.0f}")
+print(f"Actual min arm n: {actual_n_per_arm:,}")
+print(f"Achieved power @ MDE: {pwr_mde.power:.4f}")
+print(f"Underpowered for MDE: {underpowered_for_mde}")
 
-if actual_n_per_arm >= n_for_mde:
-    power_story = (
-        f"This experiment is **well powered** for a +1 pp absolute lift "
-        f"(needed ~{n_for_mde:,.0f}/arm, we have ~{actual_n_per_arm:,}/arm; "
-        f"power≈{pwr_mde.power:.1%}). A non-significant, near-zero observed effect "
-        "is therefore evidence against a *business-meaningful* improvement — "
-        "not a signal to run forever."
+# Power curve for MDE
+ns = np.unique(np.geomspace(2_000, max(actual_n_per_arm * 1.05, n_for_mde * 1.2), 40).astype(int))
+powers = [
+    power_proportions_2indep(
+        diff=MDE_ABS_PP,
+        prop2=p_control,
+        nobs1=int(n),
+        ratio=1.0,
+        alpha=ALPHA,
+        alternative="two-sided",
+        return_results=False,
     )
-else:
-    power_story = (
-        f"Sample may be short of 80% power for a +1 pp MDE "
-        f"(needed ~{n_for_mde:,.0f}/arm vs actual ~{actual_n_per_arm:,}/arm). "
-        "Extending could be justified only if stakeholders pre-commit to that MDE."
-    )
-print(power_story)
+    for n in ns
+]
+fig, ax = plt.subplots()
+ax.plot(ns, powers, color="#4C72B0", lw=2, label=f"Power for +{MDE_ABS_PP*100:.0f}pp MDE")
+ax.axhline(POWER_TARGET, color="gray", ls="--", label=f"Target {POWER_TARGET:.0%}")
+ax.axvline(actual_n_per_arm, color="#DD8452", ls="--", label=f"Actual n/arm={actual_n_per_arm:,}")
+ax.axvline(n_for_mde, color="#55A868", ls=":", label=f"Required n/arm≈{n_for_mde:,.0f}")
+ax.set_xlabel("Sample size per arm")
+ax.set_ylabel("Power")
+ax.set_title("Power curve for business MDE (+1 pp absolute)")
+ax.set_ylim(0, 1.05)
+ax.legend()
+plt.tight_layout()
+plt.show()
 
 # %% [markdown]
-# ### Power takeaway for “should we extend?”
+# ## Part 6 — Bayesian cross-check (Beta–Binomial)
 #
-# - Detecting an effect as **small as the one we observed** would require an enormous sample (printed above) — that is the math saying “this lift is tiny.”
-# - Detecting a **+1 percentage point** improvement is a realistic marketing bar. If our actual \(n\) already exceeds the 80%-power requirement for that MDE, then **extending the test is not the right next step**. The data already say a meaningful win is unlikely.
-# - Extend only if the business cares about even smaller lifts *and* is willing to pay for the huge \(n\) those lifts demand.
-
-# %% [markdown]
-# ## Conclusion — explaining this to your marketing manager
+# Secondary view used in many product orgs as a communication aid:
 #
-# The code cell below prints a manager-ready summary with the **actual numbers** from this run. The recommendation is one of: **SHIP**, **HOLD**, or **EXTEND**.
+# - Prior: \(\mathrm{Beta}(1,1)\) (uniform) on each arm’s conversion probability  
+# - Posterior: \(\mathrm{Beta}(1 + \text{conversions}, 1 + \text{non-conversions})\)  
+# - Monte Carlo: \(P(p_{\text{new}} > p_{\text{old}} \mid \text{data})\)
+#
+# This does **not** replace the primary z-test. With large \(n\) and a slightly lower treatment rate, \(P(p_{\text{new}} > p_{\text{old}})\) should be well below 50%.
 
 # %%
-# Decision logic (transparent, not post-hoc α shopping)
-significant = pval < 0.05
-improved = abs_diff > 0
-# "business meaningful" threshold: at least +0.5 pp absolute and significant
-meaningful_lift = significant and abs_diff >= 0.005
-underpowered_for_mde = pwr_mde.power < 0.8
+# Uniform Beta(1,1) prior
+post_c = stats.beta(1 + conv_control, 1 + (n_control - conv_control))
+post_t = stats.beta(1 + conv_treatment, 1 + (n_treatment - conv_treatment))
+mc = 100_000
+draws_c = post_c.rvs(mc, random_state=RNG)
+draws_t = post_t.rvs(mc, random_state=RNG)
+p_new_better = float(np.mean(draws_t > draws_c))
+p_old_better = float(np.mean(draws_c > draws_t))
+lift_draws = draws_t - draws_c
+bayes_ci = np.quantile(lift_draws, [0.025, 0.975])
 
-if meaningful_lift:
+print("=== Bayesian Beta–Binomial (uniform prior) ===")
+print(f"P(p_new > p_old | data) = {p_new_better:.4%}")
+print(f"P(p_old > p_new | data) = {p_old_better:.4%}")
+print(f"Posterior mean lift: {lift_draws.mean():.6f}")
+print(f"Central 95% posterior interval for lift: [{bayes_ci[0]:.6f}, {bayes_ci[1]:.6f}]")
+
+fig, ax = plt.subplots()
+ax.hist(lift_draws, bins=50, color="#64B5CD", edgecolor="white", density=True)
+ax.axvline(0, color="black", ls="--")
+ax.set_xlabel("p_new − p_old")
+ax.set_title("Posterior distribution of conversion lift")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## Part 7 — Production decision scorecard
+#
+# Gates inspired by trustworthy experimentation practice:
+#
+# 1. **Data quality** cleaned (mismatches/dups handled)  
+# 2. **SRM** not severe  
+# 3. **Primary OEC** statistically significant *and* in the desired direction  
+# 4. **Practical significance** (estimate and/or CI outside the indifference band)  
+# 5. **Power** adequate for the business MDE (else EXTEND only if that is the gap)
+#
+# Default outcome for a well-powered null: **HOLD**.
+
+# %%
+improved = abs_diff > 0
+meaningful_lift = significant and abs_diff >= PRACTICAL_ABS_PP
+quality_ok = n_mismatch >= 0  # always true; we cleaned
+trust_ok = not srm_severe
+
+if not trust_ok:
+    recommendation = "HOLD"
+    rec_reason = (
+        "Severe SRM / trustworthiness failure — do not ship on this experiment until diagnosed."
+    )
+elif meaningful_lift and trust_ok:
     recommendation = "SHIP"
     rec_reason = (
-        "Statistically significant improvement of at least +0.5 pp absolute for the new creative."
+        f"Statistically significant improvement ≥ {PRACTICAL_ABS_PP*100:.2f} pp and SRM not severe."
     )
 elif significant and not improved:
     recommendation = "HOLD"
-    rec_reason = (
-        "New creative is statistically significantly *worse* (or lower) than the old creative; do not ship."
-    )
+    rec_reason = "New creative is significantly worse or not better; keep the old campaign page."
 elif underpowered_for_mde:
     recommendation = "EXTEND"
     rec_reason = (
-        "Result is non-significant and the experiment is underpowered for a +1 pp MDE; more data could still resolve a meaningful lift."
+        f"Non-decisive for a +{MDE_ABS_PP*100:.2f} pp MDE with power {pwr_mde.power:.1%} < {POWER_TARGET:.0%}."
     )
 else:
     recommendation = "HOLD"
     rec_reason = (
-        "No statistically significant improvement; sample is already large enough that a business-meaningful "
-        "lift (+1 pp) would likely have been detected. Keep the old campaign creative."
+        "No significant improvement; experiment already powered for a business-relevant +1 pp MDE. "
+        "Keep the old campaign creative."
     )
 
+# Scorecard table
+scorecard = pd.DataFrame(
+    [
+        {"gate": "Schema validation", "status": "PASS", "detail": "Required columns/values present"},
+        {
+            "gate": "Exposure cleaning",
+            "status": "PASS",
+            "detail": f"Dropped {n_mismatch:,} mismatches; de-duped to {n_after_dedup:,} users",
+        },
+        {
+            "gate": "SRM (not severe)",
+            "status": "PASS" if trust_ok else "FAIL",
+            "detail": f"p={srm_p:.3g}, imbalance={abs_imbalance_pp:.4f}pp",
+        },
+        {
+            "gate": f"Primary OEC z-test (α={ALPHA})",
+            "status": "SIGNIFICANT" if significant else "NOT SIGNIFICANT",
+            "detail": f"z={zstat:.3f}, p={pval:.6f}, diff={abs_diff*100:.3f}pp",
+        },
+        {
+            "gate": "Practical significance",
+            "status": "YES" if meaningful_lift else "NO",
+            "detail": f"band=±{PRACTICAL_ABS_PP*100:.2f}pp; CI=[{ci_low*100:.3f}, {ci_high*100:.3f}]pp",
+        },
+        {
+            "gate": f"Power for +{MDE_ABS_PP*100:.0f}pp MDE ≥ {POWER_TARGET:.0%}",
+            "status": "PASS" if not underpowered_for_mde else "FAIL",
+            "detail": f"power={pwr_mde.power:.1%}, n/arm={actual_n_per_arm:,} (need ~{n_for_mde:,.0f})",
+        },
+        {
+            "gate": "Country-adjusted OR ~ 1",
+            "status": "CONSISTENT NULL" if abs(or_ab_m2 - 1) < 0.05 else "MATERIAL OR",
+            "detail": f"OR={or_ab_m2:.4f}, p={pval_ab_m2:.6f}",
+        },
+        {
+            "gate": "Bayesian P(new > old)",
+            "status": f"{p_new_better:.1%}",
+            "detail": "Uniform Beta–Binomial secondary check",
+        },
+        {
+            "gate": "Segment FDR discoveries",
+            "status": str(int(seg["sig_fdr_bh"].sum())),
+            "detail": "Countries significant after BH-FDR",
+        },
+        {"gate": "RECOMMENDATION", "status": recommendation, "detail": rec_reason},
+    ]
+)
+display(scorecard)
+
 print("=" * 72)
-print("MARKETING MANAGER SUMMARY")
+print("PRODUCTION MANAGER SUMMARY")
 print("=" * 72)
-print()
-print("Experiment: two creatives of a marketing campaign landing page (old vs new).")
-print(f"Data source path: {load_path_used.splitlines()[0]}")
-print()
-print("Data cleaning")
-print(f"  Raw rows:                      {n_before:,}")
-print(f"  Mismatched group/page rows:    {n_mismatch:,}  (dropped)")
-print(f"  After mismatch drop:           {n_after_mismatch:,}")
-print(f"  After de-duplicate user_id:    {n_after_dedup:,}")
-print(f"  After country merge (models):  {n_after_merge:,}")
-print()
-print("Conversion rates (cleaned A/B sample)")
-print(f"  Old page (control):   {p_control:.4%}   n={n_control:,}")
-print(f"  New page (treatment): {p_treatment:.4%}   n={n_treatment:,}")
-print(f"  Difference (new−old): {abs_diff:+.4%} absolute  ({rel_diff:+.2%} relative)")
-print()
-print("Two-proportion z-test (α=0.05, two-sided)")
-print(f"  z = {zstat:.4f}")
-print(f"  p = {pval:.6f}   →  {decision}")
-print(f"  95% CI for (p_new − p_old): [{ci_low:.6f}, {ci_high:.6f}]")
-print()
-print("Logistic regression odds ratio for new page (ab_page)")
-print(f"  Unadjusted OR:          {or_ab_m1:.4f}")
-print(f"  Country-adjusted OR:    {or_ab_m2:.4f}   (p={pval_ab_m2:.6f})")
-print()
-print("Power / sample size")
-print(f"  n/arm for 80% power @ observed effect: {n_for_obs:,.0f}")
-print(f"  n/arm for 80% power @ +1 pp MDE:       {n_for_mde:,.0f}")
-print(f"  Actual min arm n:                      {actual_n_per_arm:,}")
-print(f"  Power for +1 pp MDE at actual n:       {pwr_mde.power:.1%}")
-print()
+print(f"Data path: {load_path_used.splitlines()[0]}")
+print(f"Cleaned users: {n_after_dedup:,}  |  merge n: {n_after_merge:,}")
+print(f"Old page: {p_control:.4%} (n={n_control:,})  |  New page: {p_treatment:.4%} (n={n_treatment:,})")
+print(f"Lift: {abs_diff*100:+.4f} pp  |  relative {rel_diff:+.2%}")
+print(f"z={zstat:.4f}, p={pval:.6f}, 95% CI diff=[{ci_low:.6f}, {ci_high:.6f}]")
+print(f"Bootstrap 95% CI: [{boot_ci[0]:.6f}, {boot_ci[1]:.6f}]")
+print(f"OR unadj={or_ab_m1:.4f}, OR country-adj={or_ab_m2:.4f} (p={pval_ab_m2:.6f})")
+print(f"SRM χ² p={srm_p:.6g}, imbalance={abs_imbalance_pp:.4f}pp, severe={srm_severe}")
+print(f"Power @ +{MDE_ABS_PP*100:.0f}pp MDE: {pwr_mde.power:.1%}  |  Bayesian P(new>old)={p_new_better:.2%}")
 print(f"RECOMMENDATION: {recommendation}")
-print(f"  Reason: {rec_reason}")
+print(f"Reason: {rec_reason}")
 print()
-print("Plain-language brief:")
-if recommendation == "EXTEND":
-    brief = (
-        f"  We tested a new marketing-campaign landing page against the current one on "
-        f"{n_after_dedup:,} cleaned unique users. Conversion was {p_control:.2%} on the old page and "
-        f"{p_treatment:.2%} on the new page. Results were not decisive for a business-sized lift; "
-        f"**Decision: EXTEND** the experiment with a pre-registered MDE."
-    )
-elif recommendation == "SHIP":
-    brief = (
-        f"  We tested a new marketing-campaign landing page against the current one on "
-        f"{n_after_dedup:,} cleaned unique users. Conversion was {p_control:.2%} on the old page and "
-        f"{p_treatment:.2%} on the new page (difference {abs_diff * 100:+.3f} pp). "
-        f"The two-proportion z-test gave z={zstat:.2f}, p={pval:.3f} — significant at α=0.05. "
-        f"The country-adjusted odds ratio for the new page is {or_ab_m2:.3f}. "
-        f"**Decision: SHIP** the new campaign creative."
-    )
-else:
-    brief = (
-        f"  We tested a new marketing-campaign landing page against the current one on "
-        f"{n_after_dedup:,} cleaned unique users. Conversion was {p_control:.2%} on the old page and "
-        f"{p_treatment:.2%} on the new page (difference {abs_diff * 100:+.3f} pp). "
-        f"The two-proportion z-test gave z={zstat:.2f}, p={pval:.3f} — "
-        f"{'significant' if significant else 'not significant'} at α=0.05. "
-        f"The country-adjusted odds ratio for the new page is {or_ab_m2:.3f} "
-        f"(values near 1.0 mean little change in conversion odds). "
-        f"With ~{actual_n_per_arm:,} users per arm we were well positioned to detect a +1 pp lift "
-        f"(power ≈ {pwr_mde.power:.0%}). "
-        f"**Decision: HOLD** the old campaign creative — do not ship the new page."
-    )
-print(brief)
+print(
+    f"Plain language: On {n_after_dedup:,} cleaned users, the new marketing-campaign landing page "
+    f"converted at {p_treatment:.2%} vs {p_control:.2%} for the old page "
+    f"({abs_diff*100:+.3f} pp). The two-proportion test is {'' if significant else 'not '}"
+    f"significant at α={ALPHA} (p={pval:.3f}). Country-adjusted odds ratio is {or_ab_m2:.3f}. "
+    f"Power for a +{MDE_ABS_PP*100:.0f} pp lift is ~{pwr_mde.power:.0%}. "
+    f"Bayesian P(new better)≈{p_new_better:.0%}. **Decision: {recommendation}.**"
+)
 print()
 print("Limitations:")
-print("  - Mismatched assignment/page rows were dropped (unobservable true exposure).")
-print("  - One row kept per user_id after duplicates.")
-print("  - Country is a covariate, not a re-randomized factor.")
-print("  - No pre-registered MDE in the public dataset; +1 pp used as a transparent business benchmark.")
-print("  - Two-sided test; we did not re-specify α or models after seeing results.")
+print("  - Educational public dataset; treat as methodology portfolio, not a live product claim.")
+print("  - Mismatched exposures dropped; ITT-style alternatives not primary.")
+print("  - MDE and practical band are transparent business benchmarks (not historically pre-registered here).")
+print("  - Bayesian analysis uses a weakly informative uniform prior.")
+print("  - No CUPED variance reduction (no pre-period covariate in this dataset).")
 print("=" * 72)
 
 # %% [markdown]
-# ### Final framing
+# ## Closing
 #
-# | Question | Answer from this notebook |
+# | Question | Answer from this run |
 # |---|---|
-# | Did we clean the data properly? | Yes — mismatches and duplicate users handled with before/after counts. |
-# | Is the new creative statistically better? | See p-value and CI above (α=0.05). |
-# | Is any difference large enough to care about? | Compare absolute pp lift and the OR near/far from 1.0. |
-# | Should we run longer? | Only if underpowered for a pre-agreed MDE — see Part 5 numbers. |
-# | Ship / hold / extend? | Printed recommendation in the summary cell. |
+# | Is the experiment trustworthy enough to analyze? | See SRM + cleaning gates |
+# | Did the new creative win conversion? | See z-test / CI / Bayesian P |
+# | Is any effect large enough to care about? | Practical band + OR |
+# | Should we run longer? | Power vs MDE |
+# | **Ship / hold / extend?** | Scorecard recommendation |
 #
-# **Remember:** a large, clean experiment that finds ~zero lift is a *successful* experiment. It stops the company from shipping a worse (or equal) marketing campaign creative on gut feel.
+# **Production mindset:** a large, clean, well-powered **null** is a successful experiment — it stops a bad or neutral creative from shipping on gut feel.
+#
+# ### References (practice)
+#
+# - Kohavi, Tang, Xu — *Trustworthy Online Controlled Experiments* (Cambridge)  
+# - Microsoft Research — diagnosing Sample Ratio Mismatch  
+# - DoorDash / Eppo / Statsig engineering blogs — SRM as a release gate  
+# - statsmodels — `proportions_ztest`, `confint_proportions_2indep`, `proportion_confint` (Wilson)  

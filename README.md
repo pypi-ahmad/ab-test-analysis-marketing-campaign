@@ -2,15 +2,20 @@
 
 **Decision under uncertainty:** Should the company **ship** a new marketing-campaign landing page creative, **hold** the current creative, or **extend** the experiment?
 
-This repository is a **fully executed, tutorial-style Jupyter analysis** of a real e-commerce A/B test. It is **inferential statistics**, not predictive machine learning: no train/test split, no accuracy score, no model survey, no LLM stack. The deliverable is a defensible **ship / hold / extend** recommendation backed by a two-proportion z-test, logistic odds ratios, and a power / sample-size check.
+This repository is a **production-minded, fully executed Jupyter analysis** of a real e-commerce A/B test. It is **inferential experiment analysis**, not predictive machine learning: no train/test split, no accuracy score, no AutoML, no LLM stack. The deliverable is a defensible **ship / hold / extend** recommendation behind a **trustworthiness scorecard** (SRM, cleaning, practical significance, power, multi-method confirmation).
 
 | | |
 |---|---|
 | **Final recommendation (executed run)** | **HOLD** the old campaign creative |
 | **Primary p-value (two-sided)** | **0.189883** (fail to reject \(H_0\) at α = 0.05) |
 | **Observed lift (new − old)** | **−0.1578 percentage points** |
+| **Bootstrap 95% CI (lift)** | **[−0.003973, 0.000769]** |
 | **Country-adjusted odds ratio** | **0.9852** |
+| **SRM** | p = **0.947**, imbalance **0.0062 pp** (not severe) |
+| **Bayesian P(new > old)** | **9.39%** (uniform Beta–Binomial) |
 | **Power for a +1 pp absolute MDE** | **~100%** at actual sample size |
+
+> **Production honesty:** “Production-grade” means production **methodology** (Microsoft/DoorDash/Eppo-style gates, Wilson CIs, bootstrap, FDR segments, Bayesian cross-check). It does **not** mean forcing a creative “win.” The data support **HOLD**.
 
 ---
 
@@ -48,7 +53,9 @@ The only business question that matters at the end:
 | Real data, not toy numbers | Public Udacity DAND e-commerce A/B dataset (~294k raw rows) |
 | Reproducible environment | `uv` + pinned Python 3.13.13 + lockfile + named Jupyter kernel |
 | Honest inference | Pre-declared α = 0.05; two-sided test; no post-hoc α shopping |
-| Decision quality | Ship/hold/extend uses significance **and** magnitude **and** power |
+| Trustworthiness gates | Schema check, exposure cleaning, **SRM**, practical band, power |
+| Multi-method confirmation | z-test + χ² + bootstrap CI + country-adjusted logit + Bayesian P |
+| Decision quality | Ship/hold/extend uses significance **and** magnitude **and** power **and** SRM |
 | Teachable structure | Progressive markdown (why → how → interpret actual outputs) |
 
 ### Explicit non-goals
@@ -69,11 +76,11 @@ This section is written for technical reviewers: architecture choices, reproduci
 
 ### Decision 1 — Inferential pipeline, not an ML training loop
 
-**Choice:** Cleaning → EDA → two-proportion z-test → logistic regression (effect size / covariates) → power analysis → decision.
+**Choice:** Cleaning → **SRM gate** → EDA (Wilson CIs) → z-test + χ² + bootstrap → logit ORs → segment FDR → power curve → Bayesian cross-check → **decision scorecard**.
 
-**Why:** Randomization + binary conversion is a classical two-sample proportion problem. A predictive model can score individuals without answering “did the page change conversion?” Confusing those goals is a common portfolio anti-pattern.
+**Why:** Randomization + binary conversion is a classical two-sample proportion problem. Production platforms (Microsoft ExP, DoorDash, Eppo, Statsig) gate on **trustworthiness** before celebrating lifts. A predictive model can score individuals without answering “did the page change conversion?”
 
-**Tradeoff:** Logistic regression here is **not** used for prediction metrics (no ROC-AUC). It is used for **odds ratios** and country adjustment. Reviewers should judge coefficient stability and OR interpretation, not accuracy.
+**Tradeoff:** Logistic regression is **not** used for prediction metrics (no ROC-AUC). Bayesian Beta–Binomial is a **secondary** communication aid, not a replacement for the primary frequentist test.
 
 ### Decision 2 — Cleaning is a first-class analysis stage
 
@@ -95,29 +102,38 @@ This section is written for technical reviewers: architecture choices, reproduci
 | After mismatch drop | 290,585 |
 | After de-duplication | **290,584** |
 
-### Decision 3 — Two-sided test at fixed α = 0.05
+### Decision 3 — SRM as a hard trustworthiness gate
 
-**Choice:** \(H_0: p_{\text{new}} = p_{\text{old}}\), two-sided z-test via `statsmodels.stats.proportion.proportions_ztest`, plus `confint_proportions_2indep(..., compare="diff")`.
+**Choice:** χ² goodness-of-fit of observed arm sizes vs intended 50/50; flag **severe** SRM if p is tiny **and** absolute traffic imbalance > 0.5 pp.
 
-**Why:** Marketing *wants* improvement, but a one-sided test chosen after seeing a negative point estimate is p-hacking. Two-sided is the honest default for “is there a difference?”
+**Why:** Sample Ratio Mismatch is one of the most cited production failure modes (Microsoft Research, DoorDash). Analyzing effects under broken randomization yields wrong product decisions.
 
-**Tradeoff:** Slightly less power for a pure “new > old” alternative. Acceptable given ~145k users per arm.
+**Result from the real run:** χ² p ≈ **0.947**, imbalance **0.0062 pp** → not severe; analysis may proceed.
 
-### Decision 4 — Logistic regression for OR + country adjustment, not for ranking models
+### Decision 4 — Two-sided test + multi-method confirmation at fixed α = 0.05
+
+**Choice:** Primary `proportions_ztest` + `confint_proportions_2indep`; cross-check with `proportions_chisquare`; robustness via **2,000-resample bootstrap** CI; arm CIs use **Wilson** scores.
+
+**Why:** Marketing *wants* improvement, but post-hoc one-sided tests are p-hacking. Bootstrap should agree with analytic CIs at this \(n\) if assumptions are fine.
+
+**Tradeoff:** Slightly less power than a pre-registered one-sided test. Acceptable at ~145k/arm.
+
+### Decision 5 — Logistic regression for OR + country adjustment + FDR segments
 
 **Choice:**
 
 1. `converted ~ ab_page`  
 2. `converted ~ ab_page + C(country)`  
-3. `converted ~ ab_page * C(country)` (heterogeneity check)
+3. `converted ~ ab_page * C(country)` (heterogeneity check)  
+4. Per-country z-tests with **Benjamini–Hochberg FDR**
 
-**Why:** Odds ratios are interpretable for binary outcomes. Country adjustment checks whether market mix confounds the raw comparison. Interaction checks whether the page effect differs by market.
+**Why:** Odds ratios are interpretable for binary outcomes. Country adjustment checks confounding. Segment peeks without multiplicity control create false discoveries in production.
 
-**Result from the real run:** Unadjusted OR **0.9851**; country-adjusted OR **0.9852** (p ≈ 0.19). Interaction terms not significant at α = 0.05 (smallest interaction p ≈ 0.168). Primary adjusted summary = Model 2.
+**Result from the real run:** Unadjusted OR **0.9851**; country-adjusted OR **0.9852** (p ≈ 0.19). No strong interaction; no FDR country discoveries that overturn the overall null.
 
-### Decision 5 — Power answers “extend?” without guessing
+### Decision 6 — Power + practical significance answer “extend?” without guessing
 
-**Choice:** Report (a) n required to detect the **observed** effect at 80% power, and (b) power for a transparent business MDE of **+1 percentage point absolute**.
+**Choice:** Practical indifference band **±0.5 pp**; MDE **+1 pp** absolute; 80% power target; **power curve** vs n/arm; Bayesian \(P(p_{\text{new}} > p_{\text{old}})\) as secondary.
 
 **Why:** Non-significance under huge \(n\) is informative. If power for a business-relevant MDE is already ~100%, “run longer” is usually the wrong next step.
 
@@ -171,28 +187,28 @@ Interpretation: the experiment is **underpowered for a microscopic observed gap*
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Part 1 — Cleaning                                              │
-│  drop group≠page mismatches  →  de-dupe user_id  →  ab_clean    │
+│  Part 1 — Cleaning + SRM gate                                   │
+│  mismatches → de-dupe → χ² SRM vs 50/50                         │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  Part 2 — EDA                                                   │
-│  rates · CIs · daily trend · merge countries · ab_page dummy    │
+│  Part 2 — EDA (OEC = conversion)                                │
+│  Wilson CIs · daily trend · traffic · countries                 │
 └───────────────┬─────────────────────────────┬───────────────────┘
                 ▼                             ▼
 ┌───────────────────────────┐   ┌─────────────────────────────────┐
-│ Part 3 — Z-test + CI      │   │ Part 4 — Logit (OR + country)   │
-│ proportions_ztest         │   │ smf.logit + np.exp(params)      │
+│ Part 3 — Primary + robust │   │ Part 4 — Logit + segments       │
+│ z-test · χ² · bootstrap   │   │ OR ± country · BH-FDR           │
 └───────────────┬───────────┘   └─────────────────┬───────────────┘
                 └────────────────┬────────────────┘
                                  ▼
                 ┌────────────────────────────────┐
-                │ Part 5 — Power / sample size   │
-                │ MDE + observed effect          │
+                │ Part 5–6 — Power curve + Bayes │
+                │ MDE · practical band · P(win)  │
                 └────────────────┬───────────────┘
                                  ▼
                 ┌────────────────────────────────┐
-                │ Decision: SHIP / HOLD / EXTEND │
+                │ Production scorecard → decision│
                 └────────────────────────────────┘
 ```
 
@@ -210,7 +226,7 @@ statsmodels: 0.14.6
 matplotlib:  3.11.0
 seaborn:     0.13.2
 Data load path: raw GitHub URLs (cached under data/)
-Notebook QA: 14 code cells · 0 empty outputs · 0 errors · 3 plot outputs
+Notebook QA: 14 code cells · 0 empty outputs · 0 errors · 6 plot outputs
 ```
 
 ### Conversion (cleaned A/B sample)
@@ -221,17 +237,23 @@ Notebook QA: 14 code cells · 0 empty outputs · 0 errors · 3 plot outputs
 | New page (treatment) | 17,264 | 145,310 | **11.8808%** |
 | Difference (new − old) | — | — | **−0.1578 pp** (−1.311% relative) |
 
-Per-arm 95% CIs (normal approx):
+Wilson 95% CIs (per arm) are computed in the notebook (production-preferred vs plain normal).
 
-- Control: **[0.118713, 0.122060]**  
-- Treatment: **[0.117144, 0.120472]**
+### Trustworthiness — SRM
 
-### Hypothesis test
+```text
+SRM χ² p = 0.946754
+Traffic imbalance = 0.0062 pp
+Severe SRM = False  → analysis may proceed
+```
+
+### Hypothesis test + robustness
 
 ```text
 z = -1.310924
 p = 0.189883   →  FAIL TO REJECT H0 at α = 0.05
-95% CI for (p_new − p_old) = [-0.003938, 0.000781]   # includes 0
+Analytic 95% CI for (p_new − p_old) = [-0.003938, 0.000781]   # includes 0
+Bootstrap 95% CI                    = [-0.003973, 0.000769]   # agrees
 ```
 
 ### Logistic odds ratios (`ab_page` = new creative)
@@ -240,34 +262,43 @@ p = 0.189883   →  FAIL TO REJECT H0 at α = 0.05
 |---|---:|---|
 | Unadjusted | 0.9851 | ~1.5% lower odds of conversion on new page |
 | Country-adjusted | 0.9852 (p = 0.191245) | Effect unchanged after country |
-| Interaction check | min interaction p ≈ 0.168 | No strong country×page heterogeneity |
+| Interaction check | no strong country×page interaction | Use Model 2 as primary adjusted summary |
+
+### Bayesian secondary check
+
+```text
+P(p_new > p_old | data) ≈ 9.39%   (uniform Beta–Binomial)
+```
 
 ### Decision rule used (transparent, pre-structured)
 
 ```text
-if significant and abs_diff >= +0.5 pp  → SHIP
-elif significant and not improved       → HOLD
-elif underpowered for +1 pp MDE         → EXTEND
-else                                    → HOLD
+if severe SRM                         → HOLD (do not ship on broken randomization)
+elif significant and lift ≥ +0.5 pp   → SHIP
+elif significant and not improved     → HOLD
+elif underpowered for +1 pp MDE       → EXTEND
+else                                  → HOLD
 ```
 
 **Applied outcome: HOLD.**
 
-Rationale: no significant improvement; point estimate slightly negative; sample already large enough that a +1 pp win would almost certainly have been detected.
+Rationale: no significant improvement; point estimate slightly negative; Bayesian P(new better) ≈ 9%; sample already large enough that a +1 pp win would almost certainly have been detected; SRM clean.
 
 ### Manager-ready brief (from executed summary cell)
 
-> We tested a new marketing-campaign landing page against the current one on **290,584** cleaned unique users. Conversion was **12.04%** on the old page and **11.88%** on the new page (difference **−0.158 pp**). The two-proportion z-test gave **z = −1.31**, **p = 0.190** — not significant at α = 0.05. The country-adjusted odds ratio for the new page is **0.985**. With ~**145,274** users per arm we were well positioned to detect a +1 pp lift (power ≈ **100%**). **Decision: HOLD** the old campaign creative — do not ship the new page.
+> On **290,584** cleaned users, the new marketing-campaign landing page converted at **11.88%** vs **12.04%** for the old page (**−0.158 pp**). z = **−1.31**, p = **0.190** (not significant). Analytic and bootstrap CIs both cover 0. Country-adjusted OR = **0.985**. SRM not severe. Power for +1 pp ≈ **100%**. Bayesian P(new better) ≈ **9%**. **Decision: HOLD.**
 
 ## Honest limitations
 
 1. **Exposure uncertainty for mismatched rows.** 3,893 rows were dropped because assignment and recorded page disagreed. We do not impute the “true” page; that would invent exposure.
 2. **Duplicate handling policy.** One user appeared twice; we kept `first`. Alternative policies (`last`, average) could be sensitivity-checked; impact is one row.
 3. **Country is not re-randomized.** It is a covariate for adjustment, not a factorial design factor.
-4. **No pre-registered MDE in the public dataset narrative.** +1 pp is a transparent *business* benchmark for power, not a claim that product owners originally registered it.
+4. **No pre-registered MDE in the public dataset narrative.** +1 pp and ±0.5 pp practical band are transparent *business* benchmarks used for this analysis.
 5. **Two-sided α fixed at 0.05.** We did not switch to one-sided after seeing the sign of the estimate.
-6. **Educational public data.** Results illustrate rigorous process; they are not a claim about a specific live product roadmap.
-7. **MIT license covers this repo’s code and docs**, not necessarily the upstream dataset’s original distribution terms.
+6. **No CUPED** variance reduction — this public log has no pre-period covariate.
+7. **Bayesian check uses a weakly informative uniform prior**; different priors shift posterior probabilities slightly but not the ship decision here.
+8. **Educational public data.** Results illustrate rigorous process; they are not a claim about a specific live product roadmap.
+9. **MIT license covers this repo’s code and docs**, not necessarily the upstream dataset’s original distribution terms.
 
 ## Reproducibility checklist (evaluator view)
 
@@ -280,7 +311,8 @@ Rationale: no significant improvement; point estimate slightly negative; sample 
 | Executed notebook with outputs | `notebooks/ab_test_marketing_analysis.ipynb` |
 | One-command re-execution | `jupyter nbconvert --execute ...` |
 | Documented decision rule | Printed in notebook + this README |
-| Null result reported honestly | Yes (p ≈ 0.19, HOLD) |
+| Null result reported honestly | Yes (p ≈ 0.19, Bayesian P≈9%, HOLD) |
+| SRM / bootstrap / FDR / power curve | Implemented in executed notebook |
 
 ---
 
@@ -657,6 +689,30 @@ Please open issues with the appropriate template. For security-sensitive reports
 
 ---
 
+## Method stack (production checklist)
+
+| Stage | Technique | Library / approach |
+|---|---|---|
+| Schema gate | Column/value assertions | pandas |
+| Exposure integrity | Drop group≠page; de-dupe `user_id` | pandas |
+| SRM | χ² GOF vs 50/50 | `scipy.stats.chisquare` |
+| Arm uncertainty | Wilson score CI | `proportion_confint(..., method="wilson")` |
+| Primary effect | Two-proportion z-test + CI | `proportions_ztest`, `confint_proportions_2indep` |
+| Cross-check | Proportions χ² | `proportions_chisquare` |
+| Robustness | Bootstrap percentile CI | NumPy RNG (seeded) |
+| Adjusted effect | Logit odds ratios ± country | `statsmodels.formula.api.logit` |
+| Segments | Per-country z + BH-FDR | `multipletests` |
+| Design adequacy | Power @ MDE + power curve | `NormalIndPower`, `power_proportions_2indep` |
+| Secondary | Beta–Binomial P(new > old) | `scipy.stats.beta` |
+| Decision | Scorecard → SHIP / HOLD / EXTEND | explicit rules |
+
+### Industry references informing this design
+
+- Kohavi, Tang, Xu — *Trustworthy Online Controlled Experiments*
+- Microsoft Research — diagnosing Sample Ratio Mismatch  
+- DoorDash / Eppo / Statsig engineering posts on SRM as a release gate  
+- statsmodels proportion APIs  
+
 ## Bottom line
 
-This project demonstrates a complete, reproducible **experiment analysis** workflow: clean real messy assignments, estimate effects with the right tests, adjust with covariates without sliding into predictive ML, and turn numbers into a **HOLD** decision with power-backed reasoning. The null result is not a failure of the analysis — it is the analysis doing its job.
+This project demonstrates a **production-minded experiment analysis** workflow: clean messy assignments, pass an **SRM** gate, estimate effects with multi-method confirmation, adjust with covariates without sliding into predictive ML, and turn numbers into a **HOLD** decision with power- and probability-backed reasoning. The null result is not a failure of the analysis — it is the analysis doing its job.
